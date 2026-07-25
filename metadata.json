@@ -1,0 +1,6 @@
+{
+  "name": "VirJoy AI",
+  "description": "Prompt-driven AI Video Creation Platform with configurable plans, multi-input studio, product video generator, 24h retention cleanup, and dynamic monetization.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
