@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import { PlanKey, Scene, VideoProject, VideoProjectInputs } from '../types';
 import { configStore } from './configStore';
+import { generateScriptWithFallback } from './providers/scriptProvider';
 
 const GRADIENTS = [
   'from-slate-900 via-indigo-950 to-slate-900',
@@ -13,140 +14,34 @@ const GRADIENTS = [
 
 interface PlanVideoOptions {
   prompt: string;
-  targetDurationSeconds: number; // 10s to 180s
+  targetDurationSeconds: number; // 10s to 300s
   aspectRatio: '16:9' | '9:16' | '1:1';
   inputs: VideoProjectInputs;
   planKey: PlanKey;
 }
 
 export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string): Promise<Scene[]> {
-  const { prompt, targetDurationSeconds, inputs, planKey } = options;
-  const config = configStore.get();
-  const planConfig = config.plans[planKey] || config.plans.Free;
+  const { prompt, targetDurationSeconds, aspectRatio, inputs, planKey } = options;
 
-  // Estimate scene count based on total duration (e.g., 3-5 seconds per scene)
-  const estimatedSceneCount = Math.max(2, Math.min(10, Math.round(targetDurationSeconds / 4)));
+  // Delegate to Provider Integration Layer (Gemini -> Groq -> Cohere -> BuiltInRuleEngine)
+  const scriptResult = await generateScriptWithFallback({
+    prompt,
+    targetDurationSeconds,
+    aspectRatio,
+    inputs,
+    planKey
+  });
 
-  if (apiKey) {
-    try {
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build'
-          }
-        }
-      });
-
-      const lang = inputs.language || 'en-US';
-      const voice = inputs.voice || 'female-ananya';
-      const tone = inputs.voiceTone || 'Energetic';
-
-      const systemInstruction = `${config.aiProvider.systemPrompt}
-You are generating a scene-by-scene video breakdown for a short video ad/clip.
-The user prompt is: "${prompt}".
-Target Language for narration and captions: ${lang} (Write narration & subtitles strictly in ${lang}).
-Voice Style / Tone: ${tone} (${voice}).
-${inputs.productData ? `Product Context: Title: ${inputs.productData.title}, Price: ${inputs.productData.price}, Highlights: ${inputs.productData.features?.join(', ')}.` : ''}
-${inputs.ideaConcept ? `Idea Concept (₹799 Ultra Workflow): ${inputs.ideaConcept}` : ''}
-Total Target Duration: ${targetDurationSeconds} seconds across exactly ${estimatedSceneCount} scenes.
-Plan details: ${planConfig.name} (${planKey}). Export quality: ${planConfig.exportQuality}.
-
-Generate structured scenes for this video. Each scene MUST have:
-- title: Short scene title (e.g. "Hook - Problem Statement", "Product Reveal", "Feature Highlight", "Call to Action")
-- duration: duration in seconds (sum of all scene durations MUST equal approximately ${targetDurationSeconds})
-- narration: engaging spoken script for AI voiceover matching language ${lang} and tone ${tone}
-- caption: concise, punchy subtitle text in ${lang} to display on screen (1-8 words max)
-- visualPrompt: vivid description of what is shown visually in this frame`;
-
-      const response = await ai.models.generateContent({
-        model: config.aiProvider.model || 'gemini-3.6-flash',
-        contents: prompt,
-        config: {
-          systemInstruction,
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                duration: { type: Type.NUMBER },
-                narration: { type: Type.STRING },
-                caption: { type: Type.STRING },
-                visualPrompt: { type: Type.STRING }
-              },
-              required: ['title', 'duration', 'narration', 'caption', 'visualPrompt']
-            }
-          }
-        }
-      });
-
-      if (response.text) {
-        const rawScenes = JSON.parse(response.text);
-        if (Array.isArray(rawScenes) && rawScenes.length > 0) {
-          return rawScenes.map((s, idx) => ({
-            id: `scene-${idx + 1}-${Date.now()}`,
-            title: s.title || `Scene ${idx + 1}`,
-            duration: Math.max(2, Math.round(s.duration || 4)),
-            narration: s.narration || prompt,
-            caption: s.caption || s.narration || 'VirJoy AI Video',
-            visualPrompt: s.visualPrompt || 'Dynamic animated motion graphics',
-            bgGradient: GRADIENTS[idx % GRADIENTS.length],
-            imageUrl: inputs.images?.[idx % (inputs.images.length || 1)] || undefined
-          }));
-        }
-      }
-    } catch (err) {
-      console.warn('Gemini video planning fallback:', err);
-    }
-  }
-
-  // Fallback scene generator if Gemini API key not present or call fails
-  const perSceneDuration = Math.round(targetDurationSeconds / estimatedSceneCount);
-  const fallbackScenes: Scene[] = [];
-
-  for (let i = 0; i < estimatedSceneCount; i++) {
-    let title = `Scene ${i + 1}`;
-    let narration = `Key point ${i + 1} for ${prompt.substring(0, 40)}`;
-    let caption = `${prompt.substring(0, 30)}...`;
-    let visualPrompt = `Cinematic visual representation of scene ${i + 1}`;
-
-    if (i === 0) {
-      title = '1. Hook & Attention';
-      narration = inputs.ideaConcept 
-        ? `What if you could solve this instantly? ${inputs.ideaConcept}`
-        : `Stop scrolling! Here is what you need to know about ${inputs.productData?.title || prompt}`;
-      caption = '⚡ Stop Scrolling! Watch This';
-      visualPrompt = 'High-energy kinetic text intro with dramatic particle movement';
-    } else if (i === estimatedSceneCount - 1) {
-      title = `${estimatedSceneCount}. Call to Action`;
-      narration = inputs.productData
-        ? `Get yours now at ${inputs.productData.price || 'a special offer'}! Link in description.`
-        : `Try VirJoy AI today and create stunning videos in seconds!`;
-      caption = '🚀 Get Started Today!';
-      visualPrompt = 'Clean call-to-action screen with glowing button and brand logo';
-    } else {
-      if (inputs.productData?.features?.[i - 1]) {
-        title = `${i + 1}. Feature ${i}`;
-        narration = `Featuring: ${inputs.productData.features[i - 1]}`;
-        caption = `✨ ${inputs.productData.features[i - 1]}`;
-      }
-    }
-
-    fallbackScenes.push({
-      id: `scene-${i + 1}-${Date.now()}`,
-      title,
-      duration: perSceneDuration,
-      narration,
-      caption,
-      visualPrompt,
-      bgGradient: GRADIENTS[i % GRADIENTS.length],
-      imageUrl: inputs.images?.[i % (inputs.images.length || 1)] || undefined
-    });
-  }
-
-  return fallbackScenes;
+  return scriptResult.scenes.map((s, idx) => ({
+    id: `scene-${idx + 1}-${Date.now()}`,
+    title: `Scene ${s.sceneNumber}: ${s.textOverlay || 'Frame'}`,
+    duration: Math.max(2, s.duration),
+    narration: s.voiceoverText || prompt,
+    caption: s.textOverlay || s.voiceoverText || 'VirJoy AI',
+    visualPrompt: s.visualDescription || s.imagePrompt || 'Cinematic visual',
+    bgGradient: GRADIENTS[idx % GRADIENTS.length],
+    imageUrl: inputs.images?.[idx % (inputs.images.length || 1)] || undefined
+  }));
 }
 
 export async function generateIdeaWorkflow(concept: string, apiKey?: string): Promise<{

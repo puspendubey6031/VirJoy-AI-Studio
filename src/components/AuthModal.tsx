@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { AuthUser } from '../types';
+import { supabase } from '../lib/supabaseClient';
 import {
   X,
   Lock,
@@ -10,9 +11,7 @@ import {
   KeyRound,
   ArrowRight,
   ShieldCheck,
-  Sparkles,
-  Github,
-  Globe
+  Sparkles
 } from 'lucide-react';
 
 interface AuthModalProps {
@@ -44,7 +43,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [successMsg, setSuccessMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg('');
     setSuccessMsg('');
@@ -55,10 +54,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
       setIsLoading(true);
-      setTimeout(() => {
+      if (!supabase) {
         setIsLoading(false);
-        setSuccessMsg(`Password reset email sent to ${email}. Please check your inbox.`);
-      }, 800);
+        setErrorMsg('Supabase Auth client is not initialized.');
+        return;
+      }
+
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
+      setIsLoading(false);
+      if (error) {
+        setErrorMsg(error.message);
+      } else {
+        setSuccessMsg(`Password reset link sent to ${email}. Please check your inbox.`);
+      }
       return;
     }
 
@@ -85,18 +93,59 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
 
       setIsLoading(true);
-      setTimeout(() => {
+      if (!supabase) {
         setIsLoading(false);
+        setErrorMsg('Supabase Auth client is not initialized.');
+        return;
+      }
+
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(),
+        password,
+        options: {
+          data: {
+            full_name: name.trim()
+          }
+        }
+      });
+
+      setIsLoading(false);
+
+      if (error) {
+        setErrorMsg(error.message);
+        return;
+      }
+
+      if (data.user) {
         const newUser: AuthUser = {
-          id: `usr_${Date.now()}`,
-          email: email.trim(),
-          name: name.trim(),
+          id: data.user.id,
+          email: data.user.email || email.trim(),
+          name: name.trim() || data.user.email?.split('@')[0] || 'VirJoy Creator',
           provider: 'email',
-          createdAt: new Date().toISOString()
+          createdAt: data.user.created_at
         };
-        onSignIn(newUser);
-        onClose();
-      }, 600);
+
+        try {
+          await fetch('/api/user/sync-supabase-user', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              supabaseUid: data.user.id,
+              email: data.user.email,
+              fullName: newUser.name
+            })
+          });
+        } catch (syncErr) {
+          console.warn('Sync user error:', syncErr);
+        }
+
+        if (data.session) {
+          onSignIn(newUser);
+          onClose();
+        } else {
+          setSuccessMsg('Account created successfully via Supabase Auth! You can now sign in or check your email for confirmation.');
+        }
+      }
       return;
     }
 
@@ -111,34 +160,125 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
 
     setIsLoading(true);
-    setTimeout(() => {
+    if (!supabase) {
       setIsLoading(false);
-      const user: AuthUser = {
-        id: `usr_${Date.now()}`,
-        email: email.trim(),
-        name: email.split('@')[0] || 'VirJoy Creator',
+      setErrorMsg('Supabase Auth client is not initialized.');
+      return;
+    }
+
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password
+    });
+
+    setIsLoading(false);
+
+    if (error) {
+      setErrorMsg(error.message);
+      return;
+    }
+
+    if (data.user) {
+      const authUserObj: AuthUser = {
+        id: data.user.id,
+        email: data.user.email || email.trim(),
+        name: data.user.user_metadata?.full_name || data.user.email?.split('@')[0] || 'VirJoy Creator',
         provider: 'email',
-        createdAt: new Date().toISOString()
+        createdAt: data.user.created_at
       };
-      onSignIn(user);
+
+      try {
+        await fetch('/api/user/sync-supabase-user', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            supabaseUid: data.user.id,
+            email: data.user.email,
+            fullName: authUserObj.name
+          })
+        });
+      } catch (syncErr) {
+        console.warn('Sync user error:', syncErr);
+      }
+
+      onSignIn(authUserObj);
       onClose();
-    }, 600);
+    }
   };
 
-  const handleDemoSignIn = (role: 'Creator' | 'Pro' | 'Enterprise') => {
+  const handleDemoSignIn = async (role: 'Creator' | 'Pro' | 'Enterprise') => {
     setIsLoading(true);
-    setTimeout(() => {
+    setErrorMsg('');
+    setSuccessMsg('');
+
+    if (!supabase) {
       setIsLoading(false);
-      const user: AuthUser = {
-        id: `usr_demo_${role.toLowerCase()}`,
-        email: `${role.toLowerCase()}.creator@virjoy.ai`,
+      setErrorMsg('Supabase Auth client is not initialized.');
+      return;
+    }
+
+    const demoEmail = `${role.toLowerCase()}.creator@virjoy.ai`;
+    const demoPassword = `DemoVirJoyPass123!`;
+
+    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+      email: demoEmail,
+      password: demoPassword
+    });
+
+    let activeUser = signInData?.user;
+
+    if (signInError && (signInError.message.includes('Invalid login credentials') || signInError.status === 400)) {
+      const signUpRes = await supabase.auth.signUp({
+        email: demoEmail,
+        password: demoPassword,
+        options: {
+          data: {
+            full_name: `${role} VirJoy Creator`
+          }
+        }
+      });
+
+      if (signUpRes.error) {
+        setIsLoading(false);
+        setErrorMsg(`Demo Auth Error: ${signUpRes.error.message}`);
+        return;
+      }
+
+      activeUser = signUpRes.data.user;
+    } else if (signInError) {
+      setIsLoading(false);
+      setErrorMsg(signInError.message);
+      return;
+    }
+
+    setIsLoading(false);
+
+    if (activeUser) {
+      const userObj: AuthUser = {
+        id: activeUser.id,
+        email: activeUser.email || demoEmail,
         name: `${role} VirJoy Creator`,
         provider: 'email',
-        createdAt: new Date().toISOString()
+        createdAt: activeUser.created_at
       };
-      onSignIn(user);
+
+      try {
+        await fetch('/api/user/sync-supabase-user', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            supabaseUid: activeUser.id,
+            email: activeUser.email,
+            fullName: userObj.name
+          })
+        });
+      } catch (e) {
+        console.warn('Demo user sync error:', e);
+      }
+
+      onSignIn(userObj);
       onClose();
-    }, 400);
+    }
   };
 
   return (
@@ -155,10 +295,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
             <div>
               <h3 className="text-lg font-bold text-slate-100 dark:text-white light:text-slate-900">
-                {mode === 'signin' ? 'Sign In to VirJoy' : mode === 'signup' ? 'Create VirJoy Account' : 'Reset Password'}
+                {mode === 'signin' ? 'Sign In — VirJoy AI' : mode === 'signup' ? 'Register — VirJoy AI' : 'Reset Password'}
               </h3>
-              <p className="text-xs text-slate-400 dark:text-slate-400 light:text-slate-600">
-                Access your AI videos, credits & saved projects
+              <p className="text-xs text-indigo-400 dark:text-indigo-400 light:text-indigo-600 font-medium">
+                by Rishaan Studio — AI Video Platform
               </p>
             </div>
           </div>

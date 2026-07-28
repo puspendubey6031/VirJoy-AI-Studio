@@ -31,6 +31,7 @@ interface MultiModalInputProps {
     inputs: VideoProjectInputs;
   }) => void;
   onOpenPricing: (upgradeMsg?: string) => void;
+  onCheckProtectedAccess?: () => boolean;
 }
 
 const PRESET_PROMPTS = [
@@ -62,15 +63,16 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   currentPlan,
   isGenerating,
   onGenerate,
-  onOpenPricing
+  onOpenPricing,
+  onCheckProtectedAccess
 }) => {
   const planConfig = config.plans[currentPlan] || config.plans.Free;
   const voiceConfig = config.voiceConfig;
 
-  // Remaining monthly duration credits
-  const usedMonthly = userStats.usedMonthlyDurationSeconds || 0;
-  const maxMonthly = planConfig.maxMonthlyDurationSeconds || 30;
-  const remainingMonthly = Math.max(0, maxMonthly - usedMonthly);
+  // Monthly credits & remaining balance (1 second = 1 Credit)
+  const monthlyCredits = userStats.monthlyCredits || planConfig.monthlyCredits || planConfig.maxMonthlyDurationSeconds || 30;
+  const usedCredits = userStats.usedCredits !== undefined ? userStats.usedCredits : (userStats.usedMonthlyDurationSeconds || 0);
+  const remainingCredits = Math.max(0, monthlyCredits - usedCredits);
 
   // Prompt state
   const [prompt, setPrompt] = useState('');
@@ -96,6 +98,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   // Handle URL product extraction
   const handleExtractProduct = async () => {
+    if (onCheckProtectedAccess && !onCheckProtectedAccess()) return;
     if (!productUrl.trim()) return;
     setIsExtractingProduct(true);
     setExtractError('');
@@ -124,6 +127,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
 
   // Upload handlers
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (onCheckProtectedAccess && !onCheckProtectedAccess()) return;
     const files = e.target.files;
     if (!files) return;
     (Array.from(files) as File[]).forEach(file => {
@@ -138,6 +142,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   };
 
   const handleScreenshotUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (onCheckProtectedAccess && !onCheckProtectedAccess()) return;
     const files = e.target.files;
     if (!files) return;
     (Array.from(files) as File[]).forEach(file => {
@@ -152,6 +157,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   };
 
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (onCheckProtectedAccess && !onCheckProtectedAccess()) return;
     const files = e.target.files;
     if (!files) return;
     (Array.from(files) as File[]).forEach(file => {
@@ -162,6 +168,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
   // Trigger video generation
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (onCheckProtectedAccess && !onCheckProtectedAccess()) return;
     const finalPrompt = prompt.trim() || (extractedProduct ? `Product video for ${extractedProduct.title}` : 'AI promotional video');
 
     onGenerate({
@@ -183,7 +190,14 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
     });
   };
 
-  // Configurable durations: 10s up to 3 mins (180s)
+  // Clamp duration to active plan's max video duration limit if current selection exceeds it
+  React.useEffect(() => {
+    if (duration > planConfig.maxVideoDurationSeconds) {
+      setDuration(planConfig.maxVideoDurationSeconds);
+    }
+  }, [currentPlan, planConfig.maxVideoDurationSeconds]);
+
+  // Configurable durations: 10s up to 5 mins (300s)
   const durationList = voiceConfig?.durationOptions || [
     { seconds: 10, label: '10s', minPlan: 'Free' as PlanKey },
     { seconds: 15, label: '15s', minPlan: 'Free' as PlanKey },
@@ -191,7 +205,8 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
     { seconds: 60, label: '60s (1m)', minPlan: '₹199' as PlanKey },
     { seconds: 90, label: '90s (1.5m)', minPlan: '₹399' as PlanKey },
     { seconds: 120, label: '2 mins', minPlan: '₹399' as PlanKey },
-    { seconds: 180, label: '3 mins', minPlan: '₹799' as PlanKey }
+    { seconds: 180, label: '3 mins', minPlan: '₹399' as PlanKey },
+    { seconds: 300, label: '5 mins', minPlan: '₹799' as PlanKey }
   ];
 
   return (
@@ -263,7 +278,11 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
                 onChange={(e) => setPrompt(e.target.value)}
                 rows={3}
                 placeholder="e.g., A dynamic 30-second ad for wireless earbuds. Start with a dramatic subway noise hook, show sleek earbud design, highlight 30hr battery life in Hindi voiceover, end with 20% off CTA."
-                className="w-full bg-slate-950 dark:bg-slate-950 light:bg-slate-50 border border-slate-800 dark:border-slate-800 light:border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl p-3 text-sm text-slate-100 dark:text-slate-100 light:text-slate-900 placeholder-slate-500 outline-none transition-all resize-none"
+                autoCapitalize="sentences"
+                autoCorrect="on"
+                spellCheck={true}
+                style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+                className="w-full bg-slate-950 dark:bg-slate-950 light:bg-slate-50 border border-slate-800 dark:border-slate-800 light:border-slate-300 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-xl p-3 text-sm text-slate-100 dark:text-slate-100 light:text-slate-900 placeholder-slate-500 outline-none transition-all resize-none select-text"
               />
             </div>
 
@@ -517,23 +536,24 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
                 <Clock className="w-3.5 h-3.5 text-indigo-400" /> Video Duration Options:
               </span>
               <span className="text-[11px] text-slate-400 dark:text-slate-400 light:text-slate-600">
-                Single Video Limit: <strong className="text-indigo-400">{planConfig.maxVideoDurationSeconds}s</strong> • Remaining Monthly: <strong className="text-amber-400">{remainingMonthly}s</strong>
+                Single Video Limit: <strong className="text-indigo-400">{planConfig.maxVideoDurationSeconds}s ({planConfig.maxSingleVideoCredits || planConfig.maxVideoDurationSeconds} Credits)</strong> • Remaining Monthly: <strong className="text-amber-400">{remainingCredits} Credits</strong>
               </span>
             </label>
 
-            <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
+            <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
               {durationList.map((opt) => {
                 const sec = opt.seconds;
-                // Check if this duration is permitted by current plan single-video limit AND remaining monthly duration
+                const requiredCredits = sec; // 1 second = 1 credit
+                // Check if this duration is permitted by current plan single-video limit AND remaining monthly credits
                 const isSingleVideoAllowed = sec <= planConfig.maxVideoDurationSeconds;
-                const isMonthlyCreditsSufficient = sec <= remainingMonthly;
+                const isMonthlyCreditsSufficient = requiredCredits <= remainingCredits;
                 const isLocked = !isSingleVideoAllowed || !isMonthlyCreditsSufficient;
 
                 let lockReason = '';
                 if (!isSingleVideoAllowed) {
-                  lockReason = `Requires plan with ${sec}s video limit. Current plan max is ${planConfig.maxVideoDurationSeconds}s.`;
+                  lockReason = `Requires plan with ${sec}s (${requiredCredits} Credits) single video limit. Current plan cap is ${planConfig.maxVideoDurationSeconds}s (${planConfig.maxSingleVideoCredits || planConfig.maxVideoDurationSeconds} Credits).`;
                 } else if (!isMonthlyCreditsSufficient) {
-                  lockReason = `Exceeds your remaining monthly duration (${remainingMonthly}s remaining). Upgrade plan for more credits.`;
+                  lockReason = `This ${sec}s video requires ${requiredCredits} Credits, but you only have ${remainingCredits} Credits left on your ${planConfig.name}. Upgrade plan for more credits!`;
                 }
 
                 return (
@@ -541,6 +561,7 @@ export const MultiModalInput: React.FC<MultiModalInputProps> = ({
                     key={sec}
                     type="button"
                     onClick={() => {
+                      if (onCheckProtectedAccess && !onCheckProtectedAccess()) return;
                       if (isLocked) {
                         onOpenPricing(lockReason);
                       } else {

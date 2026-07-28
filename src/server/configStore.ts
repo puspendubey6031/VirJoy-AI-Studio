@@ -135,13 +135,14 @@ export const defaultConfig: AppConfig = {
       'News style'
     ],
     durationOptions: [
-      { seconds: 10, label: '10 seconds', minPlan: 'Free' },
-      { seconds: 15, label: '15 seconds', minPlan: 'Free' },
-      { seconds: 30, label: '30 seconds', minPlan: 'Free' },
-      { seconds: 60, label: '60 seconds (1 min)', minPlan: '₹199' },
-      { seconds: 90, label: '90 seconds (1.5 mins)', minPlan: '₹399' },
-      { seconds: 120, label: '2 minutes', minPlan: '₹399' },
-      { seconds: 180, label: '3 minutes', minPlan: '₹799' }
+      { seconds: 10, label: '10s', minPlan: 'Free' },
+      { seconds: 15, label: '15s', minPlan: 'Free' },
+      { seconds: 30, label: '30s', minPlan: 'Free' },
+      { seconds: 60, label: '60s (1m)', minPlan: '₹199' },
+      { seconds: 90, label: '90s (1.5m)', minPlan: '₹399' },
+      { seconds: 120, label: '2 mins', minPlan: '₹399' },
+      { seconds: 180, label: '3 mins', minPlan: '₹399' },
+      { seconds: 300, label: '5 mins', minPlan: '₹799' }
     ]
   },
   retention: {
@@ -163,6 +164,19 @@ export const defaultConfig: AppConfig = {
       bannerUnitId: 'ca-app-pub-3940256099942544/6300978111',
       interstitialUnitId: 'ca-app-pub-3940256099942544/1033173712'
     }
+  },
+  apiKeys: {
+    geminiApiKey: process.env.GEMINI_API_KEY || '',
+    groqApiKey: process.env.GROQ_API_KEY || '',
+    cohereApiKey: process.env.COHERE_API_KEY || '',
+    huggingFaceApiKey: process.env.HUGGINGFACE_API_KEY || '',
+    mistralApiKey: process.env.MISTRAL_API_KEY || '',
+    pexelsApiKey: process.env.PEXELS_API_KEY || '',
+    pixabayApiKey: process.env.PIXABAY_API_KEY || '',
+    unsplashApiKey: process.env.UNSPLASH_API_KEY || '',
+    razorpayKeyId: process.env.RAZORPAY_KEY_ID || '',
+    razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET || '',
+    customProviders: []
   }
 };
 
@@ -182,13 +196,74 @@ export const userStatsStore: UserStats = {
 };
 
 export const configStore = {
-  get: (): AppConfig => currentConfig,
+  get: (): AppConfig => {
+    return {
+      ...currentConfig,
+      apiKeys: {
+        geminiApiKey: process.env.GEMINI_API_KEY || currentConfig.apiKeys?.geminiApiKey || '',
+        groqApiKey: process.env.GROQ_API_KEY || currentConfig.apiKeys?.groqApiKey || '',
+        cohereApiKey: process.env.COHERE_API_KEY || currentConfig.apiKeys?.cohereApiKey || '',
+        huggingFaceApiKey: process.env.HUGGINGFACE_API_KEY || currentConfig.apiKeys?.huggingFaceApiKey || '',
+        mistralApiKey: process.env.MISTRAL_API_KEY || currentConfig.apiKeys?.mistralApiKey || '',
+        pexelsApiKey: process.env.PEXELS_API_KEY || currentConfig.apiKeys?.pexelsApiKey || '',
+        pixabayApiKey: process.env.PIXABAY_API_KEY || currentConfig.apiKeys?.pixabayApiKey || '',
+        unsplashApiKey: process.env.UNSPLASH_API_KEY || currentConfig.apiKeys?.unsplashApiKey || '',
+        razorpayKeyId: process.env.RAZORPAY_KEY_ID || currentConfig.apiKeys?.razorpayKeyId || '',
+        razorpayKeySecret: process.env.RAZORPAY_KEY_SECRET || currentConfig.apiKeys?.razorpayKeySecret || '',
+        customProviders: (currentConfig.apiKeys?.customProviders || []).map(p => ({
+          ...p,
+          apiKey: process.env[p.envVar] || p.apiKey || ''
+        }))
+      }
+    };
+  },
   update: (newConfig: Partial<AppConfig>): AppConfig => {
+    if (newConfig.apiKeys) {
+      if (newConfig.apiKeys.geminiApiKey !== undefined) {
+        process.env.GEMINI_API_KEY = newConfig.apiKeys.geminiApiKey.trim();
+      }
+      if (newConfig.apiKeys.groqApiKey !== undefined) {
+        process.env.GROQ_API_KEY = newConfig.apiKeys.groqApiKey.trim();
+      }
+      if (newConfig.apiKeys.cohereApiKey !== undefined) {
+        process.env.COHERE_API_KEY = newConfig.apiKeys.cohereApiKey.trim();
+      }
+      if (newConfig.apiKeys.huggingFaceApiKey !== undefined) {
+        process.env.HUGGINGFACE_API_KEY = newConfig.apiKeys.huggingFaceApiKey.trim();
+      }
+      if (newConfig.apiKeys.mistralApiKey !== undefined) {
+        process.env.MISTRAL_API_KEY = newConfig.apiKeys.mistralApiKey.trim();
+      }
+      if (newConfig.apiKeys.pexelsApiKey !== undefined) {
+        process.env.PEXELS_API_KEY = newConfig.apiKeys.pexelsApiKey.trim();
+      }
+      if (newConfig.apiKeys.pixabayApiKey !== undefined) {
+        process.env.PIXABAY_API_KEY = newConfig.apiKeys.pixabayApiKey.trim();
+      }
+      if (newConfig.apiKeys.unsplashApiKey !== undefined) {
+        process.env.UNSPLASH_API_KEY = newConfig.apiKeys.unsplashApiKey.trim();
+      }
+      if (newConfig.apiKeys.razorpayKeyId !== undefined) {
+        process.env.RAZORPAY_KEY_ID = newConfig.apiKeys.razorpayKeyId.trim();
+      }
+      if (newConfig.apiKeys.razorpayKeySecret !== undefined) {
+        process.env.RAZORPAY_KEY_SECRET = newConfig.apiKeys.razorpayKeySecret.trim();
+      }
+      if (Array.isArray(newConfig.apiKeys.customProviders)) {
+        newConfig.apiKeys.customProviders.forEach(p => {
+          if (p.envVar && p.apiKey !== undefined) {
+            process.env[p.envVar.trim()] = p.apiKey.trim();
+          }
+        });
+      }
+    }
+
     currentConfig = {
       ...currentConfig,
       ...newConfig,
       plans: newConfig.plans ? { ...currentConfig.plans, ...newConfig.plans } : currentConfig.plans,
       aiProvider: newConfig.aiProvider ? { ...currentConfig.aiProvider, ...newConfig.aiProvider } : currentConfig.aiProvider,
+      apiKeys: newConfig.apiKeys ? { ...currentConfig.apiKeys, ...newConfig.apiKeys } : currentConfig.apiKeys,
       voiceConfig: newConfig.voiceConfig ? { ...currentConfig.voiceConfig, ...newConfig.voiceConfig } : currentConfig.voiceConfig,
       retention: newConfig.retention ? { ...currentConfig.retention, ...newConfig.retention } : currentConfig.retention,
       monetization: newConfig.monetization ? { ...currentConfig.monetization, ...newConfig.monetization } : currentConfig.monetization

@@ -81,9 +81,31 @@ export interface VoiceConfig {
   durationOptions: DurationOption[];
 }
 
+export interface CustomProviderKey {
+  id: string;
+  name: string;
+  envVar: string;
+  apiKey: string;
+}
+
+export interface APIKeysConfig {
+  geminiApiKey?: string;
+  groqApiKey?: string;
+  cohereApiKey?: string;
+  huggingFaceApiKey?: string;
+  mistralApiKey?: string;
+  pexelsApiKey?: string;
+  pixabayApiKey?: string;
+  unsplashApiKey?: string;
+  razorpayKeyId?: string;
+  razorpayKeySecret?: string;
+  customProviders?: CustomProviderKey[];
+}
+
 export interface AppConfig {
   plans: Record<PlanKey, PlanConfig>;
   aiProvider: AIProviderConfig;
+  apiKeys?: APIKeysConfig;
   voiceConfig: VoiceConfig;
   retention: RetentionConfig;
   monetization: MonetizationConfig;
@@ -149,6 +171,9 @@ export interface AuthUser {
   id: string;
   email: string;
   name?: string;
+  phone?: string;
+  emailVerified?: boolean;
+  phoneVerified?: boolean;
   avatarUrl?: string;
   provider?: 'email' | 'google' | 'github';
   createdAt?: string;

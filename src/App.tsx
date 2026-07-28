@@ -1,17 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { AppConfig, AuthUser, PlanKey, UserStats, VideoProject, VideoProjectInputs, Scene } from './types';
+import { supabase } from './lib/supabaseClient';
 import { Header } from './components/Header';
 import { MultiModalInput } from './components/MultiModalInput';
 import { VideoStudioPlayer } from './components/VideoStudioPlayer';
 import { GenerationsHistory } from './components/GenerationsHistory';
 import { AuthModal } from './components/AuthModal';
+import { AuthVerificationGate } from './components/AuthVerificationGate';
 import { TimelineEditor } from './components/TimelineEditor';
 import { PlanPricingModal } from './components/PlanPricingModal';
 import { IdeaToVideoModal } from './components/IdeaToVideoModal';
 import { AdminConfigModal } from './components/AdminConfigModal';
 import { AdBanner } from './components/AdBanner';
+import {
+  AccountProfileModal,
+  CreditsUsageModal,
+  HowToUseModal,
+  AboutModal,
+  ContactModal
+} from './components/UserMenuAndModals';
 import { defaultConfig } from './server/configStore';
-import { AlertTriangle, Sparkles, ShieldCheck, Zap } from 'lucide-react';
+import { AlertTriangle, Sparkles, ShieldCheck, Zap, X } from 'lucide-react';
 
 const demoProject: VideoProject = {
   id: 'proj_demo_1',
@@ -65,14 +74,56 @@ export default function App() {
   const [config, setConfig] = useState<AppConfig>(defaultConfig);
 
   // Authentication State
-  const [authUser, setAuthUser] = useState<AuthUser | null>(() => {
-    try {
-      const saved = localStorage.getItem('virjoy_auth_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [supabaseUserRaw, setSupabaseUserRaw] = useState<any>(null);
+
+  const syncSupabaseSessionUser = (u: any) => {
+    setSupabaseUserRaw(u);
+    if (!u) {
+      setAuthUser(null);
+      return;
     }
-  });
+    const userObj: AuthUser = {
+      id: u.id,
+      email: u.email || '',
+      name: u.user_metadata?.full_name || u.email?.split('@')[0] || 'VirJoy Creator',
+      phone: u.phone || u.user_metadata?.mobile_number,
+      emailVerified: Boolean(u.email_confirmed_at || u.confirmed_at || u.user_metadata?.email_verified),
+      phoneVerified: Boolean(u.phone_confirmed_at || u.user_metadata?.mobile_verified || u.user_metadata?.phone_verified),
+      provider: 'email',
+      createdAt: u.created_at
+    };
+    setAuthUser(userObj);
+
+    fetch('/api/user/sync-supabase-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        supabaseUid: u.id,
+        email: u.email,
+        fullName: userObj.name
+      })
+    }).catch(err => console.warn('Sync user error:', err));
+  };
+
+  // Restore Supabase Auth session and listen for auth state changes
+  useEffect(() => {
+    if (!supabase) return;
+
+    // Restore active session on page refresh
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      syncSupabaseSessionUser(session?.user || null);
+    });
+
+    // Listen for real-time auth changes (sign in, sign out, token refresh)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      syncSupabaseSessionUser(session?.user || null);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   const [userStats, setUserStats] = useState<UserStats>({
     userId: 'demo-user-1',
@@ -107,33 +158,50 @@ export default function App() {
   const [isIdeaLabOpen, setIsIdeaLabOpen] = useState(false);
   const [isTimelineOpen, setIsTimelineOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isVerificationModalOpen, setIsVerificationModalOpen] = useState(false);
   const [authModalInitialMode, setAuthModalInitialMode] = useState<'signin' | 'signup'>('signin');
+
+  // Menu Modals
+  const [isAccountProfileOpen, setIsAccountProfileOpen] = useState(false);
+  const [isCreditsUsageOpen, setIsCreditsUsageOpen] = useState(false);
+  const [isHowToUseOpen, setIsHowToUseOpen] = useState(false);
+  const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [isContactOpen, setIsContactOpen] = useState(false);
 
   const handleSignIn = (user: AuthUser) => {
     setAuthUser(user);
-    try {
-      localStorage.setItem('virjoy_auth_user', JSON.stringify(user));
-    } catch (e) {
-      console.warn('Failed to save auth to localStorage:', e);
-    }
     setUserStats(prev => ({
       ...prev,
       userId: user.id
     }));
   };
 
-  const handleSignOut = () => {
-    setAuthUser(null);
-    try {
-      localStorage.removeItem('virjoy_auth_user');
-    } catch (e) {
-      console.warn('Failed to clear auth from localStorage:', e);
+  const handleSignOut = async () => {
+    if (supabase) {
+      await supabase.auth.signOut();
     }
+    setAuthUser(null);
   };
 
   const handleOpenAuth = (mode: 'signin' | 'signup' = 'signin') => {
+    if (sessionGateState === 'email_unverified' || sessionGateState === 'mobile_unverified') {
+      setIsVerificationModalOpen(true);
+      return;
+    }
     setAuthModalInitialMode(mode);
     setIsAuthModalOpen(true);
+  };
+
+  const checkProtectedAccess = (): boolean => {
+    if (sessionGateState === 'authenticated') {
+      return true;
+    }
+    if (sessionGateState === 'unauthenticated') {
+      handleOpenAuth('signin');
+    } else {
+      setIsVerificationModalOpen(true);
+    }
+    return false;
   };
 
   const handleOpenPricingWithMessage = (msg?: string) => {
@@ -186,7 +254,7 @@ export default function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-key': adminKey || 'virjoy-admin-2026'
+          'x-admin-key': adminKey || ''
         },
         body: JSON.stringify(newConfig)
       });
@@ -198,6 +266,10 @@ export default function App() {
 
   // Switch Plan
   const handleSelectPlan = async (planKey: PlanKey) => {
+    if (!checkProtectedAccess()) {
+      setIsPricingOpen(false);
+      return;
+    }
     try {
       const res = await fetch('/api/user/plan', {
         method: 'POST',
@@ -233,6 +305,9 @@ export default function App() {
     aspectRatio: '16:9' | '9:16' | '1:1';
     inputs: VideoProjectInputs;
   }) => {
+    if (!checkProtectedAccess()) {
+      return;
+    }
     setIsGenerating(true);
     setErrorNotice(null);
 
@@ -326,6 +401,10 @@ export default function App() {
     inputs: VideoProjectInputs;
     scenes: Scene[];
   }) => {
+    if (!checkProtectedAccess()) {
+      setIsIdeaLabOpen(false);
+      return;
+    }
     setIsGenerating(true);
     setErrorNotice(null);
 
@@ -428,6 +507,50 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Session Access Rules: Valid Session + Verified Email + Verified Mobile = Access
+  const isSessionValid = Boolean(authUser);
+  const isEmailVerified = Boolean(
+    supabaseUserRaw?.email_confirmed_at ||
+    supabaseUserRaw?.confirmed_at ||
+    supabaseUserRaw?.user_metadata?.email_verified ||
+    authUser?.emailVerified
+  );
+  const isMobileVerified = Boolean(
+    supabaseUserRaw?.phone_confirmed_at ||
+    supabaseUserRaw?.user_metadata?.mobile_verified ||
+    supabaseUserRaw?.user_metadata?.phone_verified ||
+    authUser?.phoneVerified
+  );
+
+  let sessionGateState: 'authenticated' | 'unauthenticated' | 'email_unverified' | 'mobile_unverified' = 'unauthenticated';
+
+  if (!isSessionValid) {
+    sessionGateState = 'unauthenticated';
+  } else if (!isEmailVerified) {
+    sessionGateState = 'email_unverified';
+  } else if (!isMobileVerified) {
+    sessionGateState = 'mobile_unverified';
+  } else {
+    sessionGateState = 'authenticated';
+  }
+
+  useEffect(() => {
+    if (sessionGateState === 'email_unverified' || sessionGateState === 'mobile_unverified') {
+      setIsVerificationModalOpen(true);
+    } else if (sessionGateState === 'authenticated') {
+      setIsVerificationModalOpen(false);
+    }
+  }, [sessionGateState]);
+
+  const isAdmin = Boolean(
+    authUser?.isAdmin ||
+    authUser?.role === 'admin' ||
+    authUser?.email?.toLowerCase() === 'admin@virjoy.ai' ||
+    authUser?.email?.toLowerCase() === 'admin@rishaan.com' ||
+    supabaseUserRaw?.user_metadata?.role === 'admin' ||
+    supabaseUserRaw?.user_metadata?.isAdmin === true
+  );
+
   return (
     <div className="min-h-screen bg-slate-950 dark:bg-slate-950 light:bg-slate-50 text-slate-100 dark:text-slate-100 light:text-slate-900 font-sans selection:bg-indigo-500 selection:text-white pb-12 flex flex-col transition-colors duration-200">
       {/* Header */}
@@ -435,11 +558,38 @@ export default function App() {
         config={config}
         userStats={userStats}
         authUser={authUser}
-        onOpenPricing={() => setIsPricingOpen(true)}
-        onOpenAdmin={() => setIsAdminOpen(true)}
-        onOpenIdeaLab={() => setIsIdeaLabOpen(true)}
+        supabaseUserRaw={supabaseUserRaw}
+        isAdmin={isAdmin}
+        onOpenPricing={() => {
+          if (!checkProtectedAccess()) return;
+          setIsPricingOpen(true);
+        }}
+        onOpenAdmin={() => {
+          setIsAdminOpen(true);
+        }}
+        onOpenIdeaLab={() => {
+          if (!checkProtectedAccess()) return;
+          setIsIdeaLabOpen(true);
+        }}
         onOpenAuth={handleOpenAuth}
         onSignOut={handleSignOut}
+        onOpenAccountProfile={() => {
+          if (!checkProtectedAccess()) return;
+          setIsAccountProfileOpen(true);
+        }}
+        onOpenCreditsUsage={() => {
+          if (!checkProtectedAccess()) return;
+          setIsCreditsUsageOpen(true);
+        }}
+        onOpenHowToUse={() => setIsHowToUseOpen(true)}
+        onOpenAbout={() => setIsAboutOpen(true)}
+        onOpenContact={() => setIsContactOpen(true)}
+        onOpenMyVideos={() => {
+          const historySection = document.getElementById('generations-history-section');
+          if (historySection) {
+            historySection.scrollIntoView({ behavior: 'smooth' });
+          }
+        }}
       />
 
       {/* Main Container */}
@@ -449,7 +599,10 @@ export default function App() {
           placement="headerBanner"
           config={config}
           currentPlan={userStats.currentPlan}
-          onOpenPricing={() => setIsPricingOpen(true)}
+          onOpenPricing={() => {
+            if (!checkProtectedAccess()) return;
+            setIsPricingOpen(true);
+          }}
         />
 
         {/* Error / Credit Limit Alert Banner */}
@@ -464,7 +617,10 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setIsPricingOpen(true)}
+                onClick={() => {
+                  if (!checkProtectedAccess()) return;
+                  setIsPricingOpen(true);
+                }}
                 className="bg-rose-500 hover:bg-rose-400 text-white font-bold px-4 py-1.5 rounded-xl text-xs shadow cursor-pointer shrink-0"
               >
                 Upgrade to {errorNotice.requiredPlan || '₹199'} Plan
@@ -500,6 +656,7 @@ export default function App() {
               isGenerating={isGenerating}
               onGenerate={handleGenerateVideo}
               onOpenPricing={handleOpenPricingWithMessage}
+              onCheckProtectedAccess={checkProtectedAccess}
             />
 
             {/* Generations History Component */}
@@ -507,7 +664,10 @@ export default function App() {
               history={userStats.history || []}
               activeProjectId={activeProject?.id}
               onSelectProject={handleSelectHistoryProject}
-              onOpenPricing={() => setIsPricingOpen(true)}
+              onOpenPricing={() => {
+                if (!checkProtectedAccess()) return;
+                setIsPricingOpen(true);
+              }}
             />
 
             {/* Sidebar Ad Banner */}
@@ -523,7 +683,10 @@ export default function App() {
           <div className="lg:col-span-5 space-y-6 lg:sticky lg:top-20">
             <VideoStudioPlayer
               project={activeProject}
-              onOpenTimelineEditor={() => setIsTimelineOpen(true)}
+              onOpenTimelineEditor={() => {
+                if (!checkProtectedAccess()) return;
+                setIsTimelineOpen(true);
+              }}
               onOpenPricing={() => handleOpenPricingWithMessage()}
             />
           </div>
@@ -531,6 +694,41 @@ export default function App() {
       </main>
 
       {/* Modals & Drawers */}
+      {/* Auth Verification Modal Popup */}
+      {isVerificationModalOpen && sessionGateState !== 'authenticated' && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto animate-fade-in">
+          <div className="relative w-full max-w-2xl bg-slate-900 border border-slate-800 rounded-3xl p-2 shadow-2xl">
+            <button
+              onClick={() => setIsVerificationModalOpen(false)}
+              className="absolute top-4 right-4 z-20 text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 p-2 rounded-full cursor-pointer transition-colors"
+              title="Close verification dialog"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <AuthVerificationGate
+              sessionState={sessionGateState}
+              userEmail={authUser?.email || supabaseUserRaw?.email}
+              userPhone={authUser?.phone || supabaseUserRaw?.phone || supabaseUserRaw?.user_metadata?.mobile_number}
+              onOpenAuth={(mode) => {
+                setIsVerificationModalOpen(false);
+                handleOpenAuth(mode);
+              }}
+              onSignOut={() => {
+                setIsVerificationModalOpen(false);
+                handleSignOut();
+              }}
+              onVerifiedComplete={async () => {
+                if (supabase) {
+                  const { data: { session } } = await supabase.auth.getSession();
+                  syncSupabaseSessionUser(session?.user || null);
+                }
+                setIsVerificationModalOpen(false);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
@@ -569,6 +767,7 @@ export default function App() {
         config={config}
         onUpdateConfig={handleUpdateConfig}
         onResetCredits={handleResetCredits}
+        isAdmin={isAdmin}
       />
 
       <TimelineEditor
@@ -576,6 +775,45 @@ export default function App() {
         onClose={() => setIsTimelineOpen(false)}
         project={activeProject}
         onUpdateProjectScenes={handleUpdateProjectScenes}
+      />
+
+      <AccountProfileModal
+        isOpen={isAccountProfileOpen}
+        onClose={() => setIsAccountProfileOpen(false)}
+        authUser={authUser}
+        supabaseUserRaw={supabaseUserRaw}
+        userStats={userStats}
+        config={config}
+        onOpenPricing={() => {
+          setIsAccountProfileOpen(false);
+          setIsPricingOpen(true);
+        }}
+      />
+
+      <CreditsUsageModal
+        isOpen={isCreditsUsageOpen}
+        onClose={() => setIsCreditsUsageOpen(false)}
+        userStats={userStats}
+        config={config}
+        onOpenPricing={() => {
+          setIsCreditsUsageOpen(false);
+          setIsPricingOpen(true);
+        }}
+      />
+
+      <HowToUseModal
+        isOpen={isHowToUseOpen}
+        onClose={() => setIsHowToUseOpen(false)}
+      />
+
+      <AboutModal
+        isOpen={isAboutOpen}
+        onClose={() => setIsAboutOpen(false)}
+      />
+
+      <ContactModal
+        isOpen={isContactOpen}
+        onClose={() => setIsContactOpen(false)}
       />
 
       {/* Footer */}
