@@ -163,18 +163,39 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
     const visualText = currentScene?.visualPrompt || 'Dynamic Motion Frame';
     ctx.fillText(visualText.length > 50 ? visualText.substring(0, 50) + '...' : visualText, width / 2, height / 2 - 10);
 
-    // Subtitle Caption Box at Bottom
-    if (currentScene?.caption) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
-      ctx.fillRect(20, height - 70, width - 40, 45);
-      ctx.strokeStyle = '#fbbf24';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(20, height - 70, width - 40, 45);
+    // Subtitle Caption Box with Dynamic Position, Font, Color, and Size
+    if (currentScene?.caption && project.inputs.subtitleEnabled !== false) {
+      const subColor = project.inputs.subtitleColor || '#FACC15';
+      const subFont = project.inputs.subtitleFont || 'sans-serif';
+      const subPos = project.inputs.subtitlePosition || 'Bottom';
+      const subSize = project.inputs.subtitleSize || 'Medium';
 
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 15px sans-serif';
+      let fontPx = 15;
+      if (subSize === 'Small') fontPx = 12;
+      else if (subSize === 'Large') fontPx = 18;
+      else if (subSize === 'Extra Large') fontPx = 22;
+
+      let boxY = height - 70;
+      let textY = height - 42;
+
+      if (subPos === 'Top') {
+        boxY = 20;
+        textY = 48;
+      } else if (subPos === 'Center') {
+        boxY = height / 2 - 22;
+        textY = height / 2 + 5;
+      }
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.fillRect(20, boxY, width - 40, 48);
+      ctx.strokeStyle = subColor;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(20, boxY, width - 40, 48);
+
+      ctx.fillStyle = subColor;
+      ctx.font = `bold ${fontPx}px ${subFont}, sans-serif`;
       ctx.textAlign = 'center';
-      ctx.fillText(currentScene.caption, width / 2, height - 42);
+      ctx.fillText(currentScene.caption, width / 2, textY);
     }
 
     // VirJoy Watermark if project is watermarked

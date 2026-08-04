@@ -26,7 +26,7 @@ export async function generateImageWithFallback(options: ImageGenerationOptions)
   const fullPrompt = `${prompt}, ${style} style, 4k resolution, cinematic lighting, masterpiece`;
 
   // --- 1. PRIMARY: GEMINI IMAGE (IMAGEN) ---
-  const geminiKey = process.env.GEMINI_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   if (geminiKey) {
     try {
       const ai = new GoogleGenAI({ apiKey: geminiKey });

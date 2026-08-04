@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { AppConfig, AuthUser, UserStats } from '../types';
-import { Video, Sparkles, Settings, CreditCard, ShieldAlert, Zap, Sun, Moon, Laptop, User, LogOut, LogIn, Menu, HelpCircle, Info, Mail, KeyRound } from 'lucide-react';
+import { Video, Sparkles, Settings, CreditCard, ShieldAlert, Zap, Sun, Moon, Laptop, User, LogOut, LogIn, Menu, HelpCircle, Info, Mail, KeyRound, Gift, Bug, Lightbulb, MessageSquare } from 'lucide-react';
 import { useTheme } from '../context/ThemeContext';
 
 interface HeaderProps {
@@ -20,9 +20,21 @@ interface HeaderProps {
   onOpenAbout: () => void;
   onOpenContact: () => void;
   onOpenMyVideos?: () => void;
+  onOpenReferrals?: () => void;
+  onOpenBilling?: () => void;
+  onOpenNotifications?: () => void;
+  onOpenSettings?: () => void;
+  onOpenDownloads?: () => void;
+  onOpenSavedProjects?: () => void;
+  onOpenLegalPolicies?: (tab?: 'privacy' | 'terms' | 'ai_policy') => void;
+  onOpenDeleteAccount?: () => void;
+  onOpenRetentionInfo?: () => void;
+  onOpenRewardedAd?: () => void;
+  onReportBug?: () => void;
+  onSuggestFeature?: () => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({
+export const Header: React.FC<HeaderProps> = React.memo(({
   config,
   userStats,
   authUser,
@@ -38,11 +50,42 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenHowToUse,
   onOpenAbout,
   onOpenContact,
-  onOpenMyVideos
+  onOpenMyVideos,
+  onOpenReferrals,
+  onOpenBilling,
+  onOpenNotifications,
+  onOpenSettings,
+  onOpenDownloads,
+  onOpenSavedProjects,
+  onOpenLegalPolicies,
+  onOpenDeleteAccount,
+  onOpenRetentionInfo,
+  onOpenRewardedAd,
+  onReportBug,
+  onSuggestFeature
 }) => {
   const { theme, setTheme } = useTheme();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // Hidden Admin Trigger: 7 consecutive taps on logo
+  const [logoTapCount, setLogoTapCount] = useState(0);
+  const logoTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const handleLogoClick = () => {
+    const next = logoTapCount + 1;
+    if (logoTimerRef.current) clearTimeout(logoTimerRef.current);
+
+    if (next >= 7) {
+      setLogoTapCount(0);
+      onOpenAdmin();
+    } else {
+      setLogoTapCount(next);
+      logoTimerRef.current = setTimeout(() => {
+        setLogoTapCount(0);
+      }, 3000);
+    }
+  };
 
   const currentPlanKey = userStats.currentPlan || 'Free';
   const planConfig = config.plans[currentPlanKey] || config.plans.Free;
@@ -68,9 +111,13 @@ export const Header: React.FC<HeaderProps> = ({
   return (
     <header className="w-full bg-slate-950/90 dark:bg-slate-950/90 light:bg-white/90 backdrop-blur-md border-b border-slate-800/80 dark:border-slate-800/80 light:border-slate-200 sticky top-0 z-40 px-4 lg:px-8 py-3 transition-colors">
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-3">
-        {/* Logo & Brand */}
+        {/* Logo & Brand (Hidden Admin Trigger: Tap 7 times) */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div
+            onClick={handleLogoClick}
+            className="flex items-center gap-3 cursor-pointer select-none active:scale-95 transition-transform"
+            title="VirJoy AI"
+          >
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-violet-600 via-indigo-500 to-amber-400 p-0.5 shadow-lg shadow-indigo-500/20">
               <div className="w-full h-full bg-slate-950 dark:bg-slate-950 light:bg-slate-900 rounded-[10px] flex items-center justify-center">
                 <Video className="w-5 h-5 text-indigo-400" />
@@ -95,13 +142,6 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <CreditCard className="w-3.5 h-3.5" />
               {currentPlanKey}
-            </button>
-            <button
-              onClick={onOpenAdmin}
-              title="Settings & API Key Configuration (Protected)"
-              className="p-1.5 text-slate-400 hover:text-white dark:hover:text-white light:hover:text-slate-900 bg-slate-900 dark:bg-slate-900 light:bg-slate-100 rounded-lg border border-slate-800 dark:border-slate-800 light:border-slate-300"
-            >
-              <Settings className="w-4 h-4" />
             </button>
           </div>
         </div>
@@ -191,6 +231,17 @@ export const Header: React.FC<HeaderProps> = ({
                 ₹799
               </span>
             </button>
+
+            {/* Refer & Earn Free Credits Button */}
+            {onOpenReferrals && (
+              <button
+                onClick={onOpenReferrals}
+                className="bg-gradient-to-r from-amber-500/20 to-indigo-500/20 hover:from-amber-500/30 hover:to-indigo-500/30 border border-amber-500/30 text-amber-300 px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+              >
+                <Gift className="w-3.5 h-3.5 text-amber-400 animate-pulse" />
+                <span className="hidden lg:inline">Refer & Earn</span>
+              </button>
+            )}
 
             {/* Plan Badge & Upgrade */}
             <button
@@ -305,21 +356,185 @@ export const Header: React.FC<HeaderProps> = ({
                     <span>Subscription & Plan ({currentPlanKey})</span>
                   </button>
 
-                  {/* Option 5: My Videos */}
-                  {onOpenMyVideos && (
+                  {/* Option 5: Refer & Earn Hub */}
+                  {onOpenReferrals && (
                     <button
                       onClick={() => {
                         setIsMenuOpen(false);
-                        onOpenMyVideos();
+                        onOpenReferrals();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold text-amber-300 hover:bg-amber-950/40 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <Gift className="w-4 h-4 text-amber-400" />
+                      <span>Refer & Earn Free Credits</span>
+                    </button>
+                  )}
+
+                  {/* Option 6: Billing & Payment History */}
+                  {onOpenBilling && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onOpenBilling();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 dark:text-slate-200 light:text-slate-800 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <CreditCard className="w-4 h-4 text-emerald-400" />
+                      <span>Billing & Payment History</span>
+                    </button>
+                  )}
+
+                  {/* Option 7: Notifications */}
+                  {onOpenNotifications && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onOpenNotifications();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 dark:text-slate-200 light:text-slate-800 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <Sparkles className="w-4 h-4 text-amber-400" />
+                      <span>Notifications</span>
+                    </button>
+                  )}
+
+                  {/* Option 8: Downloads */}
+                  {onOpenDownloads && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onOpenDownloads();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 dark:text-slate-200 light:text-slate-800 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <Video className="w-4 h-4 text-indigo-400" />
+                      <span>Downloads</span>
+                    </button>
+                  )}
+
+                  {/* Option 9: Saved Projects */}
+                  {onOpenSavedProjects && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onOpenSavedProjects();
                       }}
                       className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 dark:text-slate-200 light:text-slate-800 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 flex items-center gap-2.5 cursor-pointer transition-colors"
                     >
                       <Video className="w-4 h-4 text-purple-400" />
-                      <span>My Videos</span>
+                      <span>Saved Projects</span>
                     </button>
                   )}
 
-                  {/* Option 6: How to Use */}
+                  {/* Option 10: 24h Auto Retention Info */}
+                  {onOpenRetentionInfo && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onOpenRetentionInfo();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-amber-300 hover:bg-amber-950/30 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <Zap className="w-4 h-4 text-amber-400" />
+                      <span>24h Auto Retention Policy</span>
+                    </button>
+                  )}
+
+                  {/* Option 11: Settings */}
+                  {onOpenSettings && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onOpenSettings();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 dark:text-slate-200 light:text-slate-800 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <Settings className="w-4 h-4 text-slate-400" />
+                      <span>Settings</span>
+                    </button>
+                  )}
+
+                  {/* Feedback: Report Bug */}
+                  {onReportBug && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onReportBug();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold text-rose-400 hover:bg-rose-950/30 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <Bug className="w-4 h-4 text-rose-400" />
+                      <span>Report Bug</span>
+                    </button>
+                  )}
+
+                  {/* Feedback: Suggest Feature */}
+                  {onSuggestFeature && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onSuggestFeature();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold text-indigo-300 hover:bg-indigo-950/40 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <Lightbulb className="w-4 h-4 text-amber-300" />
+                      <span>Suggest Feature</span>
+                    </button>
+                  )}
+
+                  {/* Option 12: Legal Policies (Privacy, Terms, AI Policy) */}
+                  {onOpenLegalPolicies && (
+                    <>
+                      <button
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          onOpenLegalPolicies('privacy');
+                        }}
+                        className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 dark:text-slate-200 light:text-slate-800 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 flex items-center gap-2.5 cursor-pointer transition-colors"
+                      >
+                        <ShieldAlert className="w-4 h-4 text-emerald-400" />
+                        <span>Privacy Policy</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          onOpenLegalPolicies('terms');
+                        }}
+                        className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 dark:text-slate-200 light:text-slate-800 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 flex items-center gap-2.5 cursor-pointer transition-colors"
+                      >
+                        <HelpCircle className="w-4 h-4 text-indigo-400" />
+                        <span>Terms & Conditions</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          setIsMenuOpen(false);
+                          onOpenLegalPolicies('ai_policy');
+                        }}
+                        className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 dark:text-slate-200 light:text-slate-800 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-100 flex items-center gap-2.5 cursor-pointer transition-colors"
+                      >
+                        <Sparkles className="w-4 h-4 text-purple-400" />
+                        <span>AI Usage Policy</span>
+                      </button>
+                    </>
+                  )}
+
+                  {/* Option 13: Watch Ad for Bonus Credits */}
+                  {onOpenRewardedAd && (
+                    <button
+                      onClick={() => {
+                        setIsMenuOpen(false);
+                        onOpenRewardedAd();
+                      }}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-extrabold text-amber-400 hover:bg-amber-950/40 flex items-center gap-2.5 cursor-pointer transition-colors"
+                    >
+                      <Sparkles className="w-4 h-4 text-amber-400" />
+                      <span>Earn Free Credits (Watch Ad)</span>
+                    </button>
+                  )}
+
+                  {/* Option 14: How to Use */}
                   <button
                     onClick={() => {
                       setIsMenuOpen(false);
@@ -331,7 +546,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <span>How to Use VirJoy AI</span>
                   </button>
 
-                  {/* Option 7: Contact Support */}
+                  {/* Option 15: Contact Support */}
                   <button
                     onClick={() => {
                       setIsMenuOpen(false);
@@ -343,7 +558,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <span>Contact Support</span>
                   </button>
 
-                  {/* Option 8: About VirJoy AI */}
+                  {/* Option 16: About VirJoy AI */}
                   <button
                     onClick={() => {
                       setIsMenuOpen(false);
@@ -355,23 +570,25 @@ export const Header: React.FC<HeaderProps> = ({
                     <span>About VirJoy AI</span>
                   </button>
 
-                  {/* Option 9: API Key Configuration / Settings */}
-                  <button
-                    onClick={() => {
-                      setIsMenuOpen(false);
-                      onOpenAdmin();
-                    }}
-                    className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-amber-300 hover:bg-amber-950/40 dark:hover:bg-amber-950/40 light:hover:bg-amber-50 flex items-center gap-2.5 cursor-pointer transition-colors"
-                  >
-                    <KeyRound className="w-4 h-4 text-amber-400" />
-                    <span>API Key Configuration</span>
-                  </button>
-
                   {authUser && (
                     <>
                       <div className="my-1.5 border-t border-slate-800 dark:border-slate-800 light:border-slate-200" />
 
-                      {/* Option 10: Sign Out */}
+                      {/* Option 17: Delete Account */}
+                      {onOpenDeleteAccount && (
+                        <button
+                          onClick={() => {
+                            setIsMenuOpen(false);
+                            onOpenDeleteAccount();
+                          }}
+                          className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-rose-400 hover:bg-rose-950/40 flex items-center gap-2.5 cursor-pointer transition-colors"
+                        >
+                          <ShieldAlert className="w-4 h-4 text-rose-400" />
+                          <span>Delete Account</span>
+                        </button>
+                      )}
+
+                      {/* Option 18: Sign Out */}
                       <button
                         onClick={() => {
                           setIsMenuOpen(false);
@@ -387,18 +604,9 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               )}
             </div>
-
-            {/* Settings & System Admin Lock Button */}
-            <button
-              onClick={onOpenAdmin}
-              title="Settings & API Key Configuration"
-              className="bg-slate-900 dark:bg-slate-900 light:bg-slate-100 hover:bg-slate-800 dark:hover:bg-slate-800 light:hover:bg-slate-200 text-slate-300 dark:text-slate-300 light:text-slate-700 hover:text-white p-2 rounded-xl border border-slate-800 dark:border-slate-800 light:border-slate-300 transition-all text-xs flex items-center gap-1 cursor-pointer"
-            >
-              <Settings className="w-4 h-4 text-slate-400" />
-            </button>
           </div>
         </div>
       </div>
     </header>
   );
-};
+});

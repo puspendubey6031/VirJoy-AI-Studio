@@ -21,7 +21,7 @@ export interface ScriptGenerationOptions {
 
 export interface ScriptGenerationResult {
   scenes: ScriptScene[];
-  providerUsed: 'Gemini' | 'Groq' | 'Cohere' | 'BuiltInRuleEngine';
+  providerUsed: 'Gemini' | 'Groq' | 'Cohere' | 'Mistral' | 'BuiltInRuleEngine';
   modelUsed: string;
 }
 
@@ -37,13 +37,16 @@ export async function generateScriptWithFallback(options: ScriptGenerationOption
   const numScenes = Math.max(2, Math.min(8, Math.round(targetDurationSeconds / 4)));
   const avgSceneDuration = Math.round(targetDurationSeconds / numScenes);
 
+  const voiceLang = inputs.language || 'en-US';
+  const subLang = inputs.subtitleLanguage || inputs.language || 'en-US';
+
   const systemInstruction = `You are VirJoy AI Script Engine. Return strictly valid JSON array of ${numScenes} scene objects.
 Each scene object MUST have:
 - "sceneNumber": integer 1..N
 - "duration": integer seconds (average ${avgSceneDuration}s, total must equal ~${targetDurationSeconds}s)
 - "visualDescription": string detailed cinematic camera angle and lighting
-- "voiceoverText": string engaging spoken narrative (${inputs.language || 'en-US'} ${inputs.voiceTone || 'Energetic'})
-- "textOverlay": string short punchy text banner (max 5 words)
+- "voiceoverText": string spoken narrative in Voice Language (${voiceLang}, tone: ${inputs.voiceTone || 'Energetic'})
+- "textOverlay": string subtitle caption in Subtitle Language (${subLang}), accurately translating or captioning the voiceover
 - "imagePrompt": string vivid AI image generation prompt in 16:9 or 9:16 aspect ratio
 - "stockSearchTerm": string 2-3 word stock photo/video search query
 - "transition": string e.g. "fade", "zoom-in", "slide"`;
@@ -53,12 +56,12 @@ Product / Inputs: ${JSON.stringify(inputs)}
 Aspect Ratio: ${aspectRatio}`;
 
   // --- 1. PRIMARY PROVIDER: GEMINI ---
-  const geminiKey = process.env.GEMINI_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
   if (geminiKey) {
     try {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.0-flash',
         contents: `${systemInstruction}\n\n${userPrompt}\n\nReturn JSON ONLY without markdown backticks.`,
       });
 
@@ -78,7 +81,7 @@ Aspect Ratio: ${aspectRatio}`;
             transition: s.transition || 'fade'
           })),
           providerUsed: 'Gemini',
-          modelUsed: 'gemini-2.5-flash'
+          modelUsed: 'gemini-2.0-flash'
         };
       }
     } catch (err: any) {
@@ -177,11 +180,59 @@ Aspect Ratio: ${aspectRatio}`;
         }
       }
     } catch (err: any) {
-      console.warn('[ScriptProvider] Cohere fallback failed, falling back to BuiltInRuleEngine:', err?.message || err);
+      console.warn('[ScriptProvider] Cohere fallback failed, trying Mistral fallback:', err?.message || err);
     }
   }
 
-  // --- 4. FALLBACK 3: BUILT-IN RULE ENGINE ---
+  // --- 4. FALLBACK 3: MISTRAL AI ---
+  const mistralKey = process.env.MISTRAL_API_KEY;
+  if (mistralKey) {
+    try {
+      const res = await fetch('https://api.mistral.ai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${mistralKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'mistral-small-latest',
+          messages: [
+            { role: 'system', content: `${systemInstruction} Return JSON array only.` },
+            { role: 'user', content: userPrompt }
+          ],
+          response_format: { type: 'json_object' }
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const content = data.choices?.[0]?.message?.content || '';
+        const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        const parsed = JSON.parse(cleaned);
+        const scenesArr = Array.isArray(parsed) ? parsed : (parsed.scenes || []);
+        if (scenesArr.length > 0) {
+          return {
+            scenes: scenesArr.map((s: any, idx: number) => ({
+              sceneNumber: s.sceneNumber || idx + 1,
+              duration: s.duration || avgSceneDuration,
+              visualDescription: s.visualDescription || `Scene ${idx + 1} for ${prompt}`,
+              voiceoverText: s.voiceoverText || prompt,
+              textOverlay: s.textOverlay || 'VirJoy AI',
+              imagePrompt: s.imagePrompt || `High resolution scene for ${prompt}`,
+              stockSearchTerm: s.stockSearchTerm || 'commercial',
+              transition: 'fade'
+            })),
+            providerUsed: 'Mistral',
+            modelUsed: 'mistral-small-latest'
+          };
+        }
+      }
+    } catch (err: any) {
+      console.warn('[ScriptProvider] Mistral fallback failed, falling back to BuiltInRuleEngine:', err?.message || err);
+    }
+  }
+
+  // --- 5. FALLBACK 4: BUILT-IN RULE ENGINE ---
   const defaultScenes: ScriptScene[] = [
     {
       sceneNumber: 1,

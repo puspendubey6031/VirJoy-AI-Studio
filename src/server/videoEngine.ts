@@ -2,6 +2,7 @@ import { GoogleGenAI, Type } from '@google/genai';
 import { PlanKey, Scene, VideoProject, VideoProjectInputs } from '../types';
 import { configStore } from './configStore';
 import { generateScriptWithFallback } from './providers/scriptProvider';
+import { masterWorkflowEngine } from './engine/workflowEngine';
 
 const GRADIENTS = [
   'from-slate-900 via-indigo-950 to-slate-900',
@@ -23,7 +24,34 @@ interface PlanVideoOptions {
 export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string): Promise<Scene[]> {
   const { prompt, targetDurationSeconds, aspectRatio, inputs, planKey } = options;
 
-  // Delegate to Provider Integration Layer (Gemini -> Groq -> Cohere -> BuiltInRuleEngine)
+  // Execute Phase 5 AI Video Generation Engine Pipeline
+  const checkpoint = await masterWorkflowEngine.runFullPipeline({
+    jobId: `job_pipeline_${Date.now()}`,
+    userId: 'usr_active',
+    prompt,
+    targetDurationSeconds,
+    aspectRatio,
+    voice: inputs.voice,
+    language: inputs.language,
+    userUploads: inputs.images,
+    planKey,
+    apiKey: apiKey || process.env.GEMINI_API_KEY
+  });
+
+  if (checkpoint.scenes && checkpoint.scenes.length > 0) {
+    return checkpoint.scenes.map((s, idx) => ({
+      id: s.sceneId || `scene-${idx + 1}-${Date.now()}`,
+      title: `Scene ${s.sceneNumber}: ${s.narrationText.substring(0, 20)}`,
+      duration: Math.max(2, s.durationSeconds),
+      narration: s.narrationText || prompt,
+      caption: s.narrationText || 'VirJoy AI',
+      visualPrompt: s.visualPrompt || 'Cinematic visual',
+      bgGradient: GRADIENTS[idx % GRADIENTS.length],
+      imageUrl: s.assignedAssetUrl || inputs.images?.[idx % (inputs.images.length || 1)] || undefined
+    }));
+  }
+
+  // Fallback to Provider Integration Layer
   const scriptResult = await generateScriptWithFallback({
     prompt,
     targetDurationSeconds,

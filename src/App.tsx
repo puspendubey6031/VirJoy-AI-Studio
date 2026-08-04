@@ -19,8 +19,28 @@ import {
   AboutModal,
   ContactModal
 } from './components/UserMenuAndModals';
+import { DesignStudioForm } from './components/DesignStudioForm';
+import { usePWA } from './hooks/usePWA';
+import { PWAInstallModal } from './components/pwa/PWAInstallModal';
+import { PWAOfflineBanner } from './components/pwa/PWAOfflineBanner';
+import { PWAUpdateModal } from './components/pwa/PWAUpdateModal';
+import { useGlobalJob } from './context/GlobalJobContext';
+import { GlobalProcessingModal } from './components/GlobalProcessingModal';
+import { ReferralDashboardModal } from './components/ReferralDashboardModal';
+import { BillingHistoryModal } from './components/BillingHistoryModal';
+import { NotificationsModal } from './components/NotificationsModal';
+import { UserSettingsModal } from './components/UserSettingsModal';
+import { DownloadsModal } from './components/DownloadsModal';
+import { SavedProjectsModal } from './components/SavedProjectsModal';
+import { LegalPoliciesModal } from './components/LegalPoliciesModal';
+import { DeleteAccountModal } from './components/DeleteAccountModal';
+import { AutoRetentionInfoModal } from './components/AutoRetentionInfoModal';
+import { RewardedAdModal } from './components/RewardedAdModal';
+import { OnboardingModal } from './components/OnboardingModal';
+import { FeedbackModal } from './components/FeedbackModal';
+import { MaintenancePage } from './components/MaintenancePage';
 import { defaultConfig } from './server/configStore';
-import { AlertTriangle, Sparkles, ShieldCheck, Zap, X } from 'lucide-react';
+import { AlertTriangle, Sparkles, ShieldCheck, Zap, X, Video, Palette } from 'lucide-react';
 
 const demoProject: VideoProject = {
   id: 'proj_demo_1',
@@ -73,6 +93,9 @@ const demoProject: VideoProject = {
 export default function App() {
   const [config, setConfig] = useState<AppConfig>(defaultConfig);
 
+  // Initialize PWA Hook
+  const pwa = usePWA(config.pwaConfig);
+
   // Authentication State
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [supabaseUserRaw, setSupabaseUserRaw] = useState<any>(null);
@@ -121,7 +144,7 @@ export default function App() {
     });
 
     return () => {
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
     };
   }, []);
 
@@ -148,6 +171,7 @@ export default function App() {
   });
 
   const [activeProject, setActiveProject] = useState<VideoProject | null>(demoProject);
+  const [activeStudioTab, setActiveStudioTab] = useState<'video' | 'design'>('video');
   const [isGenerating, setIsGenerating] = useState(false);
   const [errorNotice, setErrorNotice] = useState<{ title: string; message: string; requiredPlan?: string } | null>(null);
 
@@ -164,9 +188,42 @@ export default function App() {
   // Menu Modals
   const [isAccountProfileOpen, setIsAccountProfileOpen] = useState(false);
   const [isCreditsUsageOpen, setIsCreditsUsageOpen] = useState(false);
+  const [isReferralDashboardOpen, setIsReferralDashboardOpen] = useState(false);
   const [isHowToUseOpen, setIsHowToUseOpen] = useState(false);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isContactOpen, setIsContactOpen] = useState(false);
+
+  // Additional Production Modals
+  const [isBillingOpen, setIsBillingOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isUserSettingsOpen, setIsUserSettingsOpen] = useState(false);
+  const [isDownloadsOpen, setIsDownloadsOpen] = useState(false);
+  const [isSavedProjectsOpen, setIsSavedProjectsOpen] = useState(false);
+  const [isLegalPoliciesOpen, setIsLegalPoliciesOpen] = useState(false);
+  const [legalPoliciesTab, setLegalPoliciesTab] = useState<'privacy' | 'terms' | 'ai_policy'>('privacy');
+  const [isDeleteAccountOpen, setIsDeleteAccountOpen] = useState(false);
+  const [isRetentionInfoOpen, setIsRetentionInfoOpen] = useState(false);
+  const [isRewardedAdOpen, setIsRewardedAdOpen] = useState(false);
+
+  // First Time User Onboarding, Feedback, and Maintenance Bypass State
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+  const [feedbackInitialType, setFeedbackInitialType] = useState<'Bug Report' | 'Feature Suggestion'>('Bug Report');
+  const [isAdminBypassed, setIsAdminBypassed] = useState(false);
+  const [appToast, setAppToast] = useState<string | null>(null);
+
+  const showAppToast = (msg: string) => {
+    setAppToast(msg);
+    setTimeout(() => setAppToast(null), 3000);
+  };
+
+  // Check Onboarding completion status on startup
+  useEffect(() => {
+    const onboardingCompleted = localStorage.getItem('virjoy_onboarding_completed') === 'true';
+    if (config.onboardingConfig?.enabled && !onboardingCompleted) {
+      setIsOnboardingOpen(true);
+    }
+  }, [config.onboardingConfig]);
 
   const handleSignIn = (user: AuthUser) => {
     setAuthUser(user);
@@ -244,6 +301,35 @@ export default function App() {
 
   useEffect(() => {
     fetchConfigAndStats();
+
+    // High-frequency polling to ensure instant sync when Admin changes config
+    const intervalId = setInterval(() => {
+      fetchConfigAndStats();
+    }, 4000);
+
+    // Supabase Realtime subscription for instant change notifications
+    let channel: any = null;
+    if (supabase) {
+      channel = supabase
+        .channel('admin_config_sync')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'plans' }, () => {
+          fetchConfigAndStats();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, () => {
+          fetchConfigAndStats();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings' }, () => {
+          fetchConfigAndStats();
+        })
+        .subscribe();
+    }
+
+    return () => {
+      clearInterval(intervalId);
+      if (channel && supabase) {
+        supabase.removeChannel(channel);
+      }
+    };
   }, []);
 
   // Update System Configuration with x-admin-key Authorization
@@ -298,7 +384,10 @@ export default function App() {
     }
   };
 
-  // Generate Video Handler (Calls /api/video/plan and /api/video/render with plan limit checks)
+  // Global AI Job Engine hook
+  const { submitAIJob } = useGlobalJob();
+
+  // Generate Video Handler (Calls Universal Global AI Processing Engine)
   const handleGenerateVideo = async (options: {
     prompt: string;
     targetDurationSeconds: number;
@@ -308,88 +397,56 @@ export default function App() {
     if (!checkProtectedAccess()) {
       return;
     }
-    setIsGenerating(true);
     setErrorNotice(null);
 
     try {
-      // Step 1: Plan Scenes using Gemini AI
-      const planRes = await fetch('/api/video/plan', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt: options.prompt,
-          targetDurationSeconds: options.targetDurationSeconds,
-          aspectRatio: options.aspectRatio,
-          inputs: options.inputs,
-          planKey: userStats.currentPlan
-        })
-      });
+      await submitAIJob('video', {
+        title: `VirJoy - ${options.prompt.substring(0, 25)}`,
+        prompt: options.prompt,
+        targetDurationSeconds: options.targetDurationSeconds,
+        aspectRatio: options.aspectRatio,
+        inputs: options.inputs,
+        planKey: userStats.currentPlan
+      }, {
+        onSuccess: (result) => {
+          if (result?.project) {
+            const proj = result.project;
+            setActiveProject(proj);
 
-      const planData = await planRes.json();
-      if (!planData.success || !planData.scenes) {
-        throw new Error(planData.error || 'Failed to generate video scene breakdown');
-      }
+            // Add to History
+            const historyItem = {
+              projectId: proj.id,
+              title: proj.title,
+              durationSeconds: proj.totalDurationSeconds,
+              creditsUsed: proj.totalDurationSeconds,
+              createdAt: proj.createdAt,
+              aspectRatio: proj.aspectRatio,
+              exportQuality: proj.exportQuality,
+              status: 'completed',
+              projectData: proj
+            };
 
-      // Step 2: Render & Finalize Project
-      const renderRes = await fetch('/api/video/render', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: `VirJoy - ${options.prompt.substring(0, 25)}`,
-          prompt: options.prompt,
-          inputs: options.inputs,
-          aspectRatio: options.aspectRatio,
-          scenes: planData.scenes,
-          planKey: userStats.currentPlan
-        })
-      });
-
-      const renderData = await renderRes.json();
-
-      if (!renderRes.ok) {
-        if (renderData.error === 'MONTHLY_CREDIT_EXHAUSTED' || renderData.error === 'DURATION_LIMIT_EXCEEDED') {
+            setUserStats(prev => ({
+              ...prev,
+              usedMonthlyDurationSeconds: prev.usedMonthlyDurationSeconds + proj.totalDurationSeconds,
+              usedCredits: prev.usedCredits + proj.totalDurationSeconds,
+              history: [historyItem, ...(prev.history || [])]
+            }));
+          }
+        },
+        onError: (errMsg) => {
           setErrorNotice({
-            title: 'Monthly Credit Limit Reached',
-            message: renderData.message,
-            requiredPlan: renderData.requiredPlan || '₹199'
+            title: 'Video Creation Issue',
+            message: errMsg || 'An error occurred during video creation. Please try again.'
           });
-          setIsPricingOpen(true);
-          return;
         }
-        throw new Error(renderData.message || renderData.error || 'Video render failed');
-      }
-
-      if (renderData.success && renderData.project) {
-        const proj = renderData.project;
-        setActiveProject(proj);
-
-        // Add to History
-        const historyItem = {
-          projectId: proj.id,
-          title: proj.title,
-          durationSeconds: proj.totalDurationSeconds,
-          creditsUsed: proj.totalDurationSeconds,
-          createdAt: proj.createdAt,
-          aspectRatio: proj.aspectRatio,
-          exportQuality: proj.exportQuality,
-          status: 'completed',
-          projectData: proj
-        };
-
-        setUserStats(prev => ({
-          ...prev,
-          usedMonthlyDurationSeconds: renderData.userUsage?.usedMonthlySeconds ?? prev.usedMonthlyDurationSeconds,
-          history: [historyItem, ...(prev.history || [])]
-        }));
-      }
+      });
     } catch (e: any) {
       console.error('Video generation error:', e);
       setErrorNotice({
         title: 'Video Creation Issue',
         message: e?.message || 'An error occurred during video creation. Please try again.'
       });
-    } finally {
-      setIsGenerating(false);
     }
   };
 
@@ -450,11 +507,16 @@ export default function App() {
           projectData: proj
         };
 
-        setUserStats(prev => ({
-          ...prev,
-          usedMonthlyDurationSeconds: renderData.userUsage?.usedMonthlySeconds ?? prev.usedMonthlyDurationSeconds,
-          history: [historyItem, ...(prev.history || [])]
-        }));
+        setUserStats(prev => {
+          const usedSec = renderData.userUsage?.usedMonthlySeconds ?? prev.usedMonthlyDurationSeconds;
+          return {
+            ...prev,
+            usedMonthlyDurationSeconds: usedSec,
+            usedCredits: usedSec,
+            remainingCredits: Math.max(0, (prev.monthlyCredits || 30) - usedSec),
+            history: [historyItem, ...(prev.history || [])]
+          };
+        });
       }
     } catch (e: any) {
       setErrorNotice({
@@ -551,6 +613,17 @@ export default function App() {
     supabaseUserRaw?.user_metadata?.isAdmin === true
   );
 
+  // If Maintenance Mode is Active and not bypassed by admin
+  if (config.maintenanceConfig?.enabled && !isAdminBypassed) {
+    return (
+      <MaintenancePage
+        config={config.maintenanceConfig}
+        onAdminBypass={() => setIsAdminBypassed(true)}
+        isAdmin={isAdmin}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 dark:bg-slate-950 light:bg-slate-50 text-slate-100 dark:text-slate-100 light:text-slate-900 font-sans selection:bg-indigo-500 selection:text-white pb-12 flex flex-col transition-colors duration-200">
       {/* Header */}
@@ -584,6 +657,27 @@ export default function App() {
         onOpenHowToUse={() => setIsHowToUseOpen(true)}
         onOpenAbout={() => setIsAboutOpen(true)}
         onOpenContact={() => setIsContactOpen(true)}
+        onOpenReferrals={() => setIsReferralDashboardOpen(true)}
+        onOpenBilling={() => setIsBillingOpen(true)}
+        onOpenNotifications={() => setIsNotificationsOpen(true)}
+        onOpenSettings={() => setIsUserSettingsOpen(true)}
+        onOpenDownloads={() => setIsDownloadsOpen(true)}
+        onOpenSavedProjects={() => setIsSavedProjectsOpen(true)}
+        onOpenLegalPolicies={(tab) => {
+          if (tab) setLegalPoliciesTab(tab);
+          setIsLegalPoliciesOpen(true);
+        }}
+        onOpenDeleteAccount={() => setIsDeleteAccountOpen(true)}
+        onOpenRetentionInfo={() => setIsRetentionInfoOpen(true)}
+        onOpenRewardedAd={() => setIsRewardedAdOpen(true)}
+        onReportBug={() => {
+          setFeedbackInitialType('Bug Report');
+          setIsFeedbackOpen(true);
+        }}
+        onSuggestFeature={() => {
+          setFeedbackInitialType('Feature Suggestion');
+          setIsFeedbackOpen(true);
+        }}
         onOpenMyVideos={() => {
           const historySection = document.getElementById('generations-history-section');
           if (historySection) {
@@ -645,52 +739,92 @@ export default function App() {
           </div>
         </div>
 
-        {/* Main Grid: MultiModal Creator Studio & Video Player */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Left Column: Creator Input Studio (7 cols) */}
-          <div className="lg:col-span-7 space-y-6">
-            <MultiModalInput
-              config={config}
-              userStats={userStats}
-              currentPlan={userStats.currentPlan}
-              isGenerating={isGenerating}
-              onGenerate={handleGenerateVideo}
-              onOpenPricing={handleOpenPricingWithMessage}
-              onCheckProtectedAccess={checkProtectedAccess}
-            />
-
-            {/* Generations History Component */}
-            <GenerationsHistory
-              history={userStats.history || []}
-              activeProjectId={activeProject?.id}
-              onSelectProject={handleSelectHistoryProject}
-              onOpenPricing={() => {
-                if (!checkProtectedAccess()) return;
-                setIsPricingOpen(true);
-              }}
-            />
-
-            {/* Sidebar Ad Banner */}
-            <AdBanner
-              placement="sidebarRect"
-              config={config}
-              currentPlan={userStats.currentPlan}
-              onOpenPricing={() => handleOpenPricingWithMessage()}
-            />
-          </div>
-
-          {/* Right Column: Live Video Canvas Player & Project Output (5 cols) */}
-          <div className="lg:col-span-5 space-y-6 lg:sticky lg:top-20">
-            <VideoStudioPlayer
-              project={activeProject}
-              onOpenTimelineEditor={() => {
-                if (!checkProtectedAccess()) return;
-                setIsTimelineOpen(true);
-              }}
-              onOpenPricing={() => handleOpenPricingWithMessage()}
-            />
+        {/* Studio Mode Selector Bar */}
+        <div className="flex items-center justify-between bg-slate-900/90 dark:bg-slate-900/90 light:bg-slate-100 p-1.5 rounded-2xl border border-slate-800 dark:border-slate-800 light:border-slate-200">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
+            <button
+              onClick={() => setActiveStudioTab('video')}
+              className={`flex-1 sm:flex-initial px-5 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                activeStudioTab === 'video'
+                  ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-lg shadow-indigo-600/25'
+                  : 'text-slate-400 hover:text-slate-200 light:text-slate-600 hover:bg-slate-800/50'
+              }`}
+            >
+              <Video className="w-4 h-4 text-indigo-400" />
+              <span>🎬 AI Video Studio</span>
+            </button>
+            <button
+              onClick={() => setActiveStudioTab('design')}
+              className={`flex-1 sm:flex-initial px-5 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                activeStudioTab === 'design'
+                  ? 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white shadow-lg shadow-indigo-600/25'
+                  : 'text-slate-400 hover:text-slate-200 light:text-slate-600 hover:bg-slate-800/50'
+              }`}
+            >
+              <Palette className="w-4 h-4 text-amber-400" />
+              <span>🎨 AI Design Studio</span>
+            </button>
           </div>
         </div>
+
+        {/* Studio Content */}
+        {activeStudioTab === 'design' ? (
+          <DesignStudioForm
+            userStats={userStats}
+            currentPlan={userStats.currentPlan}
+            config={config}
+            onUpdateUserStats={(updatedStats) => setUserStats(updatedStats)}
+            onOpenPricing={handleOpenPricingWithMessage}
+            onCheckProtectedAccess={checkProtectedAccess}
+          />
+        ) : (
+          /* Main Grid: MultiModal Creator Studio & Video Player */
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            {/* Left Column: Creator Input Studio (7 cols) */}
+            <div className="lg:col-span-7 space-y-6">
+              <MultiModalInput
+                config={config}
+                userStats={userStats}
+                currentPlan={userStats.currentPlan}
+                isGenerating={isGenerating}
+                onGenerate={handleGenerateVideo}
+                onOpenPricing={handleOpenPricingWithMessage}
+                onCheckProtectedAccess={checkProtectedAccess}
+              />
+
+              {/* Generations History Component */}
+              <GenerationsHistory
+                history={userStats.history || []}
+                activeProjectId={activeProject?.id}
+                onSelectProject={handleSelectHistoryProject}
+                onOpenPricing={() => {
+                  if (!checkProtectedAccess()) return;
+                  setIsPricingOpen(true);
+                }}
+              />
+
+              {/* Sidebar Ad Banner */}
+              <AdBanner
+                placement="sidebarRect"
+                config={config}
+                currentPlan={userStats.currentPlan}
+                onOpenPricing={() => handleOpenPricingWithMessage()}
+              />
+            </div>
+
+            {/* Right Column: Live Video Canvas Player & Project Output (5 cols) */}
+            <div className="lg:col-span-5 space-y-6 lg:sticky lg:top-20">
+              <VideoStudioPlayer
+                project={activeProject}
+                onOpenTimelineEditor={() => {
+                  if (!checkProtectedAccess()) return;
+                  setIsTimelineOpen(true);
+                }}
+                onOpenPricing={() => handleOpenPricingWithMessage()}
+              />
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Modals & Drawers */}
@@ -801,6 +935,16 @@ export default function App() {
         }}
       />
 
+      <ReferralDashboardModal
+        isOpen={isReferralDashboardOpen}
+        onClose={() => setIsReferralDashboardOpen(false)}
+        authUser={authUser}
+        onOpenPricing={() => {
+          setIsReferralDashboardOpen(false);
+          setIsPricingOpen(true);
+        }}
+      />
+
       <HowToUseModal
         isOpen={isHowToUseOpen}
         onClose={() => setIsHowToUseOpen(false)}
@@ -814,6 +958,144 @@ export default function App() {
       <ContactModal
         isOpen={isContactOpen}
         onClose={() => setIsContactOpen(false)}
+      />
+
+      <BillingHistoryModal
+        isOpen={isBillingOpen}
+        onClose={() => setIsBillingOpen(false)}
+        authUser={authUser}
+        config={config}
+        onOpenPricing={() => setIsPricingOpen(true)}
+      />
+
+      <NotificationsModal
+        isOpen={isNotificationsOpen}
+        onClose={() => setIsNotificationsOpen(false)}
+        config={config}
+      />
+
+      <UserSettingsModal
+        isOpen={isUserSettingsOpen}
+        onClose={() => setIsUserSettingsOpen(false)}
+        onOpenDeleteAccount={() => {
+          setIsUserSettingsOpen(false);
+          setIsDeleteAccountOpen(true);
+        }}
+      />
+
+      <DownloadsModal
+        isOpen={isDownloadsOpen}
+        onClose={() => setIsDownloadsOpen(false)}
+        config={config}
+        projects={userStats.history}
+        onOpenRetentionInfo={() => {
+          setIsDownloadsOpen(false);
+          setIsRetentionInfoOpen(true);
+        }}
+      />
+
+      <SavedProjectsModal
+        isOpen={isSavedProjectsOpen}
+        onClose={() => setIsSavedProjectsOpen(false)}
+        projects={userStats.history}
+        onSelectProject={handleSelectHistoryProject}
+      />
+
+      <LegalPoliciesModal
+        isOpen={isLegalPoliciesOpen}
+        onClose={() => setIsLegalPoliciesOpen(false)}
+        defaultTab={legalPoliciesTab}
+        config={config}
+      />
+
+      <DeleteAccountModal
+        isOpen={isDeleteAccountOpen}
+        onClose={() => setIsDeleteAccountOpen(false)}
+        authUser={authUser}
+        onConfirmDelete={async () => {
+          handleSignOut();
+          setIsDeleteAccountOpen(false);
+        }}
+      />
+
+      <AutoRetentionInfoModal
+        isOpen={isRetentionInfoOpen}
+        onClose={() => setIsRetentionInfoOpen(false)}
+        config={config}
+        onOpenDownloads={() => {
+          setIsRetentionInfoOpen(false);
+          setIsDownloadsOpen(true);
+        }}
+      />
+
+      <RewardedAdModal
+        isOpen={isRewardedAdOpen}
+        onClose={() => setIsRewardedAdOpen(false)}
+        config={config}
+        onRewardGranted={(rewardCredits) => {
+          setUserStats(prev => ({
+            ...prev,
+            monthlyCredits: (prev.monthlyCredits || 30) + rewardCredits,
+            remainingCredits: (prev.remainingCredits || 0) + rewardCredits
+          }));
+        }}
+      />
+
+      {/* First Time User Onboarding Modal */}
+      {config.onboardingConfig && (
+        <OnboardingModal
+          isOpen={isOnboardingOpen}
+          onClose={() => setIsOnboardingOpen(false)}
+          config={config.onboardingConfig}
+          onComplete={() => {
+            localStorage.setItem('virjoy_onboarding_completed', 'true');
+            setIsOnboardingOpen(false);
+          }}
+        />
+      )}
+
+      {/* User Feedback & Bug Report Modal */}
+      <FeedbackModal
+        isOpen={isFeedbackOpen}
+        onClose={() => setIsFeedbackOpen(false)}
+        authUser={authUser}
+        initialType={feedbackInitialType}
+        feedbackConfig={config.feedbackConfig}
+        showToast={showAppToast}
+      />
+
+      {/* Universal Global AI Processing Engine Modal Overlay */}
+      <GlobalProcessingModal
+        config={config}
+        onPreviewResult={(result, jobType) => {
+          if (jobType === 'video' && result?.project) {
+            setActiveProject(result.project);
+            setActiveStudioTab('video');
+          } else if (result?.item) {
+            setActiveStudioTab('design');
+          }
+        }}
+      />
+
+      {/* Progressive Web App (PWA) System Elements */}
+      <PWAOfflineBanner
+        isOnline={pwa.isOnline}
+        fallbackMessage={config.pwaConfig?.offlineMode?.fallbackMessage}
+      />
+
+      <PWAInstallModal
+        isOpen={pwa.showInstallPromptModal}
+        pwaConfig={config.pwaConfig}
+        onInstall={pwa.promptInstall}
+        onLater={() => pwa.dismissInstall('later')}
+        onNever={() => pwa.dismissInstall('never')}
+      />
+
+      <PWAUpdateModal
+        isOpen={pwa.needUpdate}
+        pwaConfig={config.pwaConfig}
+        onUpdate={pwa.updateApp}
+        onDismiss={() => pwa.dismissInstall('later')}
       />
 
       {/* Footer */}
