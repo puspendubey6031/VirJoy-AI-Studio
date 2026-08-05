@@ -1,5 +1,5 @@
-import { AppConfig, PlanKey, UserStats, VideoProject, DesignHistoryItem, DesignStudioConfig } from '../types';
-import { supabaseServer } from './supabaseServer';
+import type { AppConfig, PlanKey, UserStats, VideoProject, DesignHistoryItem, DesignStudioConfig } from '../types.js';
+import { supabaseServer } from './supabaseServer.js';
 
 export const designProjectsStore = new Map<string, DesignHistoryItem>();
 

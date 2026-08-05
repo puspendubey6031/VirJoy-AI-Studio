@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { PromptIntelligenceResult } from './types';
+import type { PromptIntelligenceResult } from './types.js';
 
 export async function analyzePromptIntelligence(
   prompt: string,

@@ -1,4 +1,4 @@
-import { RenderInstructionPackage, TimelinePackage } from './types';
+import type { RenderInstructionPackage, TimelinePackage } from './types.js';
 
 export class VideoComposer {
   public compileRenderPackage(

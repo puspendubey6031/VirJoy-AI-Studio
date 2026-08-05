@@ -1,4 +1,4 @@
-import { GranularSceneSpec, SubtitleCue, SubtitleEngineSpec } from './types';
+import type { GranularSceneSpec, SubtitleCue, SubtitleEngineSpec } from './types.js';
 
 export class UniversalSubtitleEngine {
   public generateSubtitles(

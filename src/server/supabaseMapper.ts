@@ -1,5 +1,5 @@
-import { supabaseServer } from './supabaseServer';
-import { PlanKey, VideoProject } from '../types';
+import { supabaseServer } from './supabaseServer.js';
+import type { PlanKey, VideoProject } from '../types.js';
 
 /**
  * Interface mappings for existing Supabase public schema tables.

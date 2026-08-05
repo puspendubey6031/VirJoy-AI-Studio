@@ -1,4 +1,4 @@
-import {
+import type {
   ReferralConfig,
   ReferralItem,
   CreditLogItem,
@@ -6,9 +6,9 @@ import {
   PlanKey,
   ActivityLogItem,
   NotificationItem
-} from '../types';
-import { configStore, userStatsStore } from './configStore';
-import { supabaseServer } from './supabaseServer';
+} from '../types.js';
+import { configStore, userStatsStore } from './configStore.js';
+import { supabaseServer } from './supabaseServer.js';
 
 // In-Memory Referral and Credit Log Stores
 export const referralsStore = new Map<string, ReferralItem>();

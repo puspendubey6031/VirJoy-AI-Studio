@@ -1,11 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
-import { configStore, userStatsStore, videoProjectsStore } from '../src/server/configStore';
-import { extractProductFromUrl } from '../src/server/productExtractor';
-import { generateIdeaWorkflow, planVideoWithAI } from '../src/server/videoEngine';
-import { cleanupStats, purgeExpiredVideos } from '../src/server/cleanupService';
-import { checkBackendSupabaseConnection, supabaseServer } from '../src/server/supabaseServer';
+import { configStore, userStatsStore, videoProjectsStore } from '../src/server/configStore.js';
+import { extractProductFromUrl } from '../src/server/productExtractor.js';
+import { generateIdeaWorkflow, planVideoWithAI } from '../src/server/videoEngine.js';
+import { cleanupStats, purgeExpiredVideos } from '../src/server/cleanupService.js';
+import { checkBackendSupabaseConnection, supabaseServer } from '../src/server/supabaseServer.js';
 import {
   getProviderStatusReport,
   generateImageWithFallback,
@@ -14,8 +14,8 @@ import {
   generateVideoClipWithFallback,
   createRazorpayOrder,
   verifyRazorpayPaymentSignature
-} from '../src/server/providers';
-import { VideoProject, PlanKey } from '../src/types';
+} from '../src/server/providers/index.js';
+import type { VideoProject, PlanKey } from '../src/types.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[VERCEL RUNTIME ERROR / UNCAUGHT EXCEPTION]:', err);
@@ -55,17 +55,21 @@ app.post(['/api/auth/signup', '/auth/signup'], async (req, res) => {
     let authError = null;
 
     if (supabaseServer) {
-      const { data, error } = await supabaseServer.auth.signUp({
-        email: userEmail,
-        password,
-        options: {
-          data: { full_name: userName || userEmail.split('@')[0] }
+      try {
+        const { data, error } = await supabaseServer.auth.signUp({
+          email: userEmail,
+          password,
+          options: {
+            data: { full_name: userName || userEmail.split('@')[0] }
+          }
+        });
+        if (error) {
+          authError = error.message;
+        } else if (data?.user) {
+          supabaseUser = data.user;
         }
-      });
-      if (error) {
-        authError = error.message;
-      } else if (data?.user) {
-        supabaseUser = data.user;
+      } catch (sbErr: any) {
+        console.warn('[SUPABASE SIGNUP ATTEMPT NOTE]:', sbErr?.message || sbErr);
       }
     }
 
@@ -131,14 +135,18 @@ app.post(['/api/auth/login', '/auth/login'], async (req, res) => {
 
     // 2. Try Supabase Auth if configured
     if (supabaseServer) {
-      const { data, error } = await supabaseServer.auth.signInWithPassword({
-        email: userEmail,
-        password
-      });
-      if (error) {
-        authError = error.message;
-      } else if (data?.user) {
-        supabaseUser = data.user;
+      try {
+        const { data, error } = await supabaseServer.auth.signInWithPassword({
+          email: userEmail,
+          password
+        });
+        if (error) {
+          authError = error.message;
+        } else if (data?.user) {
+          supabaseUser = data.user;
+        }
+      } catch (sbErr: any) {
+        console.warn('[SUPABASE LOGIN ATTEMPT NOTE]:', sbErr?.message || sbErr);
       }
     }
 
@@ -527,6 +535,21 @@ app.get('/api/user/stats', (_req, res) => {
       remainingSeconds: Math.max(0, planConfig.maxMonthlyDurationSeconds - userStatsStore.usedMonthlyDurationSeconds),
       history: userStatsStore.history
     }
+  });
+});
+
+// 404 Handler for API routes - Always return JSON
+app.use((_req, res) => {
+  res.status(404).json({ success: false, error: 'NOT_FOUND', message: 'Route or endpoint not found' });
+});
+
+// Express Global Error Handler - Always return JSON
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[EXPRESS RUNTIME ERROR]:', err);
+  res.status(500).json({
+    success: false,
+    error: 'SERVER_ERROR',
+    message: err?.message || 'A server error occurred'
   });
 });
 

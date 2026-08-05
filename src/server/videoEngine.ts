@@ -1,8 +1,8 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { PlanKey, Scene, VideoProject, VideoProjectInputs } from '../types';
-import { configStore } from './configStore';
-import { generateScriptWithFallback } from './providers/scriptProvider';
-import { masterWorkflowEngine } from './engine/workflowEngine';
+import type { PlanKey, Scene, VideoProject, VideoProjectInputs } from '../types.js';
+import { configStore } from './configStore.js';
+import { generateScriptWithFallback } from './providers/scriptProvider.js';
+import { masterWorkflowEngine } from './engine/workflowEngine.js';
 
 const GRADIENTS = [
   'from-slate-900 via-indigo-950 to-slate-900',

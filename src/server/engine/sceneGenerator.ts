@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { GranularSceneSpec, PromptIntelligenceResult } from './types';
+import type { GranularSceneSpec, PromptIntelligenceResult } from './types.js';
 
 const CAMERA_MOTIONS: GranularSceneSpec['cameraMotion'][] = [
   'zoom_in',

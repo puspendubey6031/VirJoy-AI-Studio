@@ -1,4 +1,4 @@
-import { VoiceEngineSpec } from './types';
+import type { VoiceEngineSpec } from './types.js';
 
 export class UniversalVoiceEngine {
   private defaultProvider: VoiceEngineSpec['provider'] = 'edge_tts';

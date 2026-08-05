@@ -1,10 +1,10 @@
-import {
+import type {
   GranularSceneSpec,
   MediaAssetSpec,
   SubtitleEngineSpec,
   TimelinePackage,
   VoiceEngineSpec
-} from './types';
+} from './types.js';
 
 export class TimelineEngine {
   public assembleTimelinePackage(params: {

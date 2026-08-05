@@ -1,5 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { ProductMetadata } from '../types';
+import type { ProductMetadata } from '../types.js';
 
 export async function extractProductFromUrl(url: string, apiKey?: string): Promise<ProductMetadata> {
   // If API key is provided, use Gemini to intelligently parse product details from URL pattern or mock page

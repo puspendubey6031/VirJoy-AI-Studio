@@ -3,11 +3,11 @@ import cors from 'cors';
 import path from 'path';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
-import { configStore, userStatsStore, videoProjectsStore, designProjectsStore } from './src/server/configStore';
-import { extractProductFromUrl } from './src/server/productExtractor';
-import { generateIdeaWorkflow, planVideoWithAI } from './src/server/videoEngine';
-import { cleanupStats, purgeExpiredVideos, startCleanupWorker } from './src/server/cleanupService';
-import { checkBackendSupabaseConnection, supabaseServer } from './src/server/supabaseServer';
+import { configStore, userStatsStore, videoProjectsStore, designProjectsStore } from './src/server/configStore.js';
+import { extractProductFromUrl } from './src/server/productExtractor.js';
+import { generateIdeaWorkflow, planVideoWithAI } from './src/server/videoEngine.js';
+import { cleanupStats, purgeExpiredVideos, startCleanupWorker } from './src/server/cleanupService.js';
+import { checkBackendSupabaseConnection, supabaseServer } from './src/server/supabaseServer.js';
 import {
   getProviderStatusReport,
   generateImageWithFallback,
@@ -16,14 +16,14 @@ import {
   generateVideoClipWithFallback,
   createRazorpayOrder,
   verifyRazorpayPaymentSignature
-} from './src/server/providers';
+} from './src/server/providers/index.js';
 import {
   globalJobsStore,
   submitGlobalJob,
   getActiveJobsForUser,
   cancelGlobalJob,
   retryGlobalJob
-} from './src/server/globalJobEngine';
+} from './src/server/globalJobEngine.js';
 import {
   registerReferral,
   processSubscriptionReward,
@@ -31,8 +31,8 @@ import {
   getAdminReferralDashboardData,
   getUserReferralDashboardData,
   getOrCreateUserReferralCode
-} from './src/server/referralEngine';
-import { VideoProject, PlanKey } from './src/types';
+} from './src/server/referralEngine.js';
+import type { VideoProject, PlanKey } from './src/types.js';
 
 process.on('uncaughtException', (err) => {
   console.error('[SERVER RUNTIME ERROR / UNCAUGHT EXCEPTION]:', err);
@@ -83,17 +83,21 @@ async function startServer() {
       let authError = null;
 
       if (supabaseServer) {
-        const { data, error } = await supabaseServer.auth.signUp({
-          email: userEmail,
-          password,
-          options: {
-            data: { full_name: userName || userEmail.split('@')[0] }
+        try {
+          const { data, error } = await supabaseServer.auth.signUp({
+            email: userEmail,
+            password,
+            options: {
+              data: { full_name: userName || userEmail.split('@')[0] }
+            }
+          });
+          if (error) {
+            authError = error.message;
+          } else if (data?.user) {
+            supabaseUser = data.user;
           }
-        });
-        if (error) {
-          authError = error.message;
-        } else if (data?.user) {
-          supabaseUser = data.user;
+        } catch (sbErr: any) {
+          console.warn('[SUPABASE SIGNUP ATTEMPT NOTE]:', sbErr?.message || sbErr);
         }
       }
 
@@ -159,14 +163,18 @@ async function startServer() {
 
       // 2. Try Supabase Auth if configured
       if (supabaseServer) {
-        const { data, error } = await supabaseServer.auth.signInWithPassword({
-          email: userEmail,
-          password
-        });
-        if (error) {
-          authError = error.message;
-        } else if (data?.user) {
-          supabaseUser = data.user;
+        try {
+          const { data, error } = await supabaseServer.auth.signInWithPassword({
+            email: userEmail,
+            password
+          });
+          if (error) {
+            authError = error.message;
+          } else if (data?.user) {
+            supabaseUser = data.user;
+          }
+        } catch (sbErr: any) {
+          console.warn('[SUPABASE LOGIN ATTEMPT NOTE]:', sbErr?.message || sbErr);
         }
       }
 
@@ -1669,6 +1677,19 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  // Express Global Error Handler - Always return JSON for API requests
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('[EXPRESS RUNTIME ERROR]:', err);
+    if (req.path.startsWith('/api') || req.headers.accept?.includes('application/json')) {
+      return res.status(500).json({
+        success: false,
+        error: 'SERVER_ERROR',
+        message: err?.message || 'A server error occurred'
+      });
+    }
+    next(err);
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[VirJoy AI] Server running on http://0.0.0.0:${PORT}`);

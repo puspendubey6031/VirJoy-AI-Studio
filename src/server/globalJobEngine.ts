@@ -1,13 +1,13 @@
-import { GlobalAIJob, GlobalJobType, GlobalJobStage, AppConfig, PlanKey, DesignHistoryItem } from '../types';
-import { configStore, designProjectsStore, videoProjectsStore, userStatsStore } from './configStore';
+import type { GlobalAIJob, GlobalJobType, GlobalJobStage, AppConfig, PlanKey, DesignHistoryItem } from '../types.js';
+import { configStore, designProjectsStore, videoProjectsStore, userStatsStore } from './configStore.js';
 import {
   generateImageWithFallback,
   generateSpeechWithFallback,
   generateVideoClipWithFallback
-} from './providers';
-import { planVideoWithAI } from './videoEngine';
-import { extractProductFromUrl } from './productExtractor';
-import { supabaseServer } from './supabaseServer';
+} from './providers/index.js';
+import { planVideoWithAI } from './videoEngine.js';
+import { extractProductFromUrl } from './productExtractor.js';
+import { supabaseServer } from './supabaseServer.js';
 
 // Centralized in-memory store for all global AI jobs
 export const globalJobsStore = new Map<string, GlobalAIJob>();

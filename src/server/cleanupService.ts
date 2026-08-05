@@ -1,5 +1,5 @@
-import { configStore, videoProjectsStore, designProjectsStore, userStatsStore } from './configStore';
-import { supabaseServer } from './supabaseServer';
+import { configStore, videoProjectsStore, designProjectsStore, userStatsStore } from './configStore.js';
+import { supabaseServer } from './supabaseServer.js';
 
 export interface CleanupStats {
   lastRunAt: string;

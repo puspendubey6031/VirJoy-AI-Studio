@@ -1,4 +1,4 @@
-import { VideoModelAdapter } from '../types';
+import type { VideoModelAdapter } from '../types.js';
 
 export abstract class BaseVideoModelAdapter implements VideoModelAdapter {
   abstract providerName: string;

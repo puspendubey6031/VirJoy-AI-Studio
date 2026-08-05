@@ -1,18 +1,18 @@
-import { generateScriptWithFallback } from './scriptProvider';
-import { generateImageWithFallback } from './imageProvider';
-import { generateSpeechWithFallback } from './voiceProvider';
-import { searchStockMediaWithFallback } from './stockMediaProvider';
-import { generateVideoClipWithFallback } from './videoProvider';
-import { processVideoFFmpeg, processImageSharp, lipSyncWav2Lip, animateSadTalker, animateLivePortrait } from './processingProvider';
-import { createRazorpayOrder, verifyRazorpayPaymentSignature } from './paymentProvider';
+import { generateScriptWithFallback } from './scriptProvider.js';
+import { generateImageWithFallback } from './imageProvider.js';
+import { generateSpeechWithFallback } from './voiceProvider.js';
+import { searchStockMediaWithFallback } from './stockMediaProvider.js';
+import { generateVideoClipWithFallback } from './videoProvider.js';
+import { processVideoFFmpeg, processImageSharp, lipSyncWav2Lip, animateSadTalker, animateLivePortrait } from './processingProvider.js';
+import { createRazorpayOrder, verifyRazorpayPaymentSignature } from './paymentProvider.js';
 
-export * from './scriptProvider';
-export * from './imageProvider';
-export * from './voiceProvider';
-export * from './stockMediaProvider';
-export * from './videoProvider';
-export * from './processingProvider';
-export * from './paymentProvider';
+export * from './scriptProvider.js';
+export * from './imageProvider.js';
+export * from './voiceProvider.js';
+export * from './stockMediaProvider.js';
+export * from './videoProvider.js';
+export * from './processingProvider.js';
+export * from './paymentProvider.js';
 
 export interface ProviderStatusReport {
   script: {

@@ -1,12 +1,12 @@
-import { analyzePromptIntelligence } from './promptIntelligence';
-import { generateGranularScenes } from './sceneGenerator';
-import { mediaManager } from './mediaManager';
-import { voiceEngine } from './voiceEngine';
-import { subtitleEngine } from './subtitleEngine';
-import { timelineEngine } from './timelineEngine';
-import { videoComposer } from './videoComposer';
-import { generateScriptWithFallback } from '../providers/scriptProvider';
-import {
+import { analyzePromptIntelligence } from './promptIntelligence.js';
+import { generateGranularScenes } from './sceneGenerator.js';
+import { mediaManager } from './mediaManager.js';
+import { voiceEngine } from './voiceEngine.js';
+import { subtitleEngine } from './subtitleEngine.js';
+import { timelineEngine } from './timelineEngine.js';
+import { videoComposer } from './videoComposer.js';
+import { generateScriptWithFallback } from '../providers/scriptProvider.js';
+import type {
   EngineCheckpoint,
   GranularSceneSpec,
   MediaAssetSpec,
@@ -17,7 +17,7 @@ import {
   TimelinePackage,
   VoiceEngineSpec,
   WorkflowStage
-} from './types';
+} from './types.js';
 
 export interface ExecutePipelineOptions {
   jobId: string;

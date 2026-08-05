@@ -1,4 +1,4 @@
-import { GranularSceneSpec, MediaAssetSpec } from './types';
+import type { GranularSceneSpec, MediaAssetSpec } from './types.js';
 
 interface MediaManagerCacheItem {
   cacheKey: string;
