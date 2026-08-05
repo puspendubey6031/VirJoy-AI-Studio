@@ -1,6 +1,16 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+function cleanSupabaseUrl(raw: string): string {
+  if (!raw) return '';
+  let url = raw.trim();
+  url = url.replace(/\/+$/, '');
+  url = url.replace(/\/(rest|auth)\/v1\/?$/i, '');
+  url = url.replace(/\/+$/, '');
+  return url;
+}
+
+const rawSupabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+const supabaseUrl = cleanSupabaseUrl(rawSupabaseUrl);
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const anonKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '';
 

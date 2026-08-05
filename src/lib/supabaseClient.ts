@@ -1,8 +1,18 @@
 /// <reference types="vite/client" />
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
+function cleanSupabaseUrl(raw: string): string {
+  if (!raw) return '';
+  let url = raw.trim();
+  url = url.replace(/\/+$/, '');
+  url = url.replace(/\/(rest|auth)\/v1\/?$/i, '');
+  url = url.replace(/\/+$/, '');
+  return url;
+}
+
 // Read client-side environment variables
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const rawSupabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseUrl = cleanSupabaseUrl(rawSupabaseUrl);
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 export const isSupabaseConfigured = Boolean(

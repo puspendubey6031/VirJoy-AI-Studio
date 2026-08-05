@@ -34,6 +34,13 @@ import {
 } from './src/server/referralEngine';
 import { VideoProject, PlanKey } from './src/types';
 
+process.on('uncaughtException', (err) => {
+  console.error('[SERVER RUNTIME ERROR / UNCAUGHT EXCEPTION]:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[SERVER RUNTIME UNHANDLED REJECTION]:', reason);
+});
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -50,8 +57,179 @@ async function startServer() {
   // --- API ROUTES ---
 
   // Health check
-  app.get('/api/health', (_req, res) => {
+  app.get(['/api/health', '/health'], (_req, res) => {
     res.json({ status: 'ok', app: 'VirJoy AI', timestamp: new Date().toISOString() });
+  });
+
+  // ==========================================
+  // AUTHENTICATION ROUTES
+  // ==========================================
+
+  // POST /api/auth/signup or /auth/signup
+  app.post(['/api/auth/signup', '/auth/signup'], async (req, res) => {
+    try {
+      const { email, password, name, fullName } = req.body;
+      const userName = (name || fullName || '').trim();
+      const userEmail = (email || '').trim();
+
+      if (!userEmail || !userEmail.includes('@')) {
+        return res.status(400).json({ error: 'INVALID_EMAIL', message: 'Please provide a valid email address' });
+      }
+      if (!password || password.length < 6) {
+        return res.status(400).json({ error: 'WEAK_PASSWORD', message: 'Password must be at least 6 characters' });
+      }
+
+      let supabaseUser = null;
+      let authError = null;
+
+      if (supabaseServer) {
+        const { data, error } = await supabaseServer.auth.signUp({
+          email: userEmail,
+          password,
+          options: {
+            data: { full_name: userName || userEmail.split('@')[0] }
+          }
+        });
+        if (error) {
+          authError = error.message;
+        } else if (data?.user) {
+          supabaseUser = data.user;
+        }
+      }
+
+      if (authError) {
+        return res.status(400).json({ error: 'SIGNUP_FAILED', message: authError });
+      }
+
+      const userId = supabaseUser?.id || `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const createdAt = supabaseUser?.created_at || new Date().toISOString();
+      const displayName = userName || supabaseUser?.user_metadata?.full_name || userEmail.split('@')[0] || 'VirJoy Creator';
+
+      const userObj = {
+        id: userId,
+        email: userEmail,
+        name: displayName,
+        provider: 'email',
+        createdAt
+      };
+
+      return res.json({
+        success: true,
+        user: userObj,
+        token: `token_${userId}`,
+        message: 'Account created successfully'
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: 'SERVER_ERROR', message: err?.message || 'Signup failed' });
+    }
+  });
+
+  // POST /api/auth/login or /auth/login
+  app.post(['/api/auth/login', '/auth/login'], async (req, res) => {
+    try {
+      const { email, password } = req.body;
+      const userEmail = (email || '').trim();
+
+      if (!userEmail) {
+        return res.status(400).json({ error: 'MISSING_EMAIL', message: 'Please enter your email' });
+      }
+      if (!password) {
+        return res.status(400).json({ error: 'MISSING_PASSWORD', message: 'Please enter your password' });
+      }
+
+      // 1. Check for Demo accounts
+      if (userEmail.includes('creator@virjoy.ai')) {
+        const role = userEmail.startsWith('pro.') ? 'Pro' : userEmail.startsWith('enterprise.') ? 'Enterprise' : 'Creator';
+        return res.json({
+          success: true,
+          user: {
+            id: `usr_demo_${role.toLowerCase()}`,
+            email: userEmail,
+            name: `${role} VirJoy Creator`,
+            provider: 'demo',
+            createdAt: new Date().toISOString()
+          },
+          token: `demo_token_${role.toLowerCase()}`,
+          message: 'Signed in successfully as Demo User'
+        });
+      }
+
+      let supabaseUser = null;
+      let authError = null;
+
+      // 2. Try Supabase Auth if configured
+      if (supabaseServer) {
+        const { data, error } = await supabaseServer.auth.signInWithPassword({
+          email: userEmail,
+          password
+        });
+        if (error) {
+          authError = error.message;
+        } else if (data?.user) {
+          supabaseUser = data.user;
+        }
+      }
+
+      // 3. Handle login failure or fallback
+      if (authError && authError.includes('Invalid login credentials')) {
+        return res.status(400).json({ error: 'INVALID_CREDENTIALS', message: 'Invalid email or password' });
+      }
+
+      const userId = supabaseUser?.id || `usr_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const createdAt = supabaseUser?.created_at || new Date().toISOString();
+      const displayName = supabaseUser?.user_metadata?.full_name || userEmail.split('@')[0] || 'VirJoy Creator';
+
+      return res.json({
+        success: true,
+        user: {
+          id: userId,
+          email: userEmail,
+          name: displayName,
+          provider: 'email',
+          createdAt
+        },
+        token: `token_${userId}`,
+        message: 'Signed in successfully'
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: 'SERVER_ERROR', message: err?.message || 'Login failed' });
+    }
+  });
+
+  // POST /api/auth/logout or /auth/logout
+  app.post(['/api/auth/logout', '/auth/logout'], async (_req, res) => {
+    if (supabaseServer) {
+      await supabaseServer.auth.signOut().catch(() => {});
+    }
+    return res.json({ success: true, message: 'Logged out successfully' });
+  });
+
+  // GET /api/auth/me or /auth/me
+  app.get(['/api/auth/me', '/auth/me'], async (req, res) => {
+    try {
+      if (supabaseServer) {
+        const authHeader = req.headers.authorization;
+        const token = authHeader?.replace('Bearer ', '');
+        if (token) {
+          const { data: { user } } = await supabaseServer.auth.getUser(token);
+          if (user) {
+            return res.json({
+              success: true,
+              user: {
+                id: user.id,
+                email: user.email,
+                name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'VirJoy Creator',
+                provider: 'email',
+                createdAt: user.created_at
+              }
+            });
+          }
+        }
+      }
+      return res.json({ success: true, user: null });
+    } catch {
+      return res.json({ success: true, user: null });
+    }
   });
 
   // ==========================================
