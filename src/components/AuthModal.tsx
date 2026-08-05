@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { AuthUser } from '../types';
 import { supabase } from '../lib/supabaseClient';
+import { getAuthCallbackUrl } from '../lib/baseUrl';
 import {
   X,
   Lock,
@@ -60,7 +61,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: getAuthCallbackUrl()
+      });
       setIsLoading(false);
       if (error) {
         setErrorMsg(error.message);
@@ -120,7 +123,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               await supabase.auth.signUp({
                 email: email.trim(),
                 password,
-                options: { data: { full_name: name.trim() } }
+                options: {
+                  data: { full_name: name.trim() },
+                  emailRedirectTo: getAuthCallbackUrl()
+                }
               });
             } catch (sbErr) {
               console.warn('Supabase client sign up sync note:', sbErr);

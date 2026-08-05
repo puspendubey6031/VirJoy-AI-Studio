@@ -7,6 +7,7 @@ import { VideoStudioPlayer } from './components/VideoStudioPlayer';
 import { GenerationsHistory } from './components/GenerationsHistory';
 import { AuthModal } from './components/AuthModal';
 import { AuthVerificationGate } from './components/AuthVerificationGate';
+import { AuthCallback } from './components/AuthCallback';
 import { TimelineEditor } from './components/TimelineEditor';
 import { PlanPricingModal } from './components/PlanPricingModal';
 import { IdeaToVideoModal } from './components/IdeaToVideoModal';
@@ -212,6 +213,10 @@ export default function App() {
   const [feedbackInitialType, setFeedbackInitialType] = useState<'Bug Report' | 'Feature Suggestion'>('Bug Report');
   const [isAdminBypassed, setIsAdminBypassed] = useState(false);
   const [appToast, setAppToast] = useState<string | null>(null);
+  const [isAuthCallbackActive, setIsAuthCallbackActive] = useState(
+    typeof window !== 'undefined' &&
+    (window.location.pathname.startsWith('/auth/callback') || window.location.hash.includes('access_token'))
+  );
 
   const showAppToast = (msg: string) => {
     setAppToast(msg);
@@ -610,6 +615,29 @@ export default function App() {
   const rolePermissions = getRolePermissions(userRole);
   const isOwner = userRole === 'Owner';
   const isAdmin = rolePermissions.adminDashboardAccess;
+
+  // Render Auth Verification Callback Handler if visiting /auth/callback or OAuth redirect
+  if (isAuthCallbackActive) {
+    return (
+      <AuthCallback
+        onAuthCallbackSuccess={({ user, isOwner: ownerFlag }) => {
+          syncSupabaseSessionUser(user);
+          setIsAuthCallbackActive(false);
+          window.history.replaceState({}, document.title, '/');
+
+          if (ownerFlag || isOwnerEmail(user.email || '')) {
+            setIsAdminOpen(true);
+            showAppToast('Welcome Owner! Email verified & logged in.');
+          } else {
+            showAppToast('Email verified successfully! Welcome to VirJoy AI.');
+          }
+        }}
+        onAuthCallbackError={(err) => {
+          showAppToast(`Verification issue: ${err}`);
+        }}
+      />
+    );
+  }
 
   // If Maintenance Mode is Active and not bypassed by admin
   if (config.maintenanceConfig?.enabled && !isAdminBypassed) {

@@ -30,6 +30,8 @@ import {
   getUserReferralDashboardData
 } from '../src/server/referralEngine.js';
 import { isOwnerEmail, getUserRole, getRolePermissions } from '../src/lib/roles.js';
+import { getAuthCallbackUrl } from '../src/lib/baseUrl.js';
+import { runFullDatabaseMigration } from '../src/server/databaseMigrator.js';
 import type { VideoProject, PlanKey } from '../src/types.js';
 
 process.on('uncaughtException', (err) => {
@@ -75,7 +77,8 @@ app.post(['/api/auth/signup', '/auth/signup'], async (req, res) => {
           email: userEmail,
           password,
           options: {
-            data: { full_name: userName || userEmail.split('@')[0] }
+            data: { full_name: userName || userEmail.split('@')[0] },
+            emailRedirectTo: getAuthCallbackUrl()
           }
         });
         if (error) {
@@ -376,9 +379,13 @@ app.post('/api/design-studio/generate', async (req, res) => {
     else if (lowTool === 'poster') featureKey = 'posterGenerator';
     else if (lowTool === 'thumbnail') featureKey = 'thumbnailGenerator';
 
-    const lockCheck = checkFeatureLockServer(featureKey, userStatsStore.currentPlan);
-    if (!lockCheck.allowed) {
-      return res.status(lockCheck.status || 403).json(lockCheck);
+    const isOwner = isOwnerEmail(userStatsStore.email) || userStatsStore.isOwner || userStatsStore.role === 'Owner';
+
+    if (!isOwner) {
+      const lockCheck = checkFeatureLockServer(featureKey, userStatsStore.currentPlan);
+      if (!lockCheck.allowed) {
+        return res.status(lockCheck.status || 403).json(lockCheck);
+      }
     }
 
     const config = configStore.get();
@@ -388,9 +395,9 @@ app.post('/api/design-studio/generate', async (req, res) => {
 
     const currentPlanConfig = config.plans[userStatsStore.currentPlan] || config.plans.Free;
     const maxMonthly = currentPlanConfig.monthlyCredits || currentPlanConfig.maxMonthlyDurationSeconds || 30;
-    const remainingCredits = Math.max(0, maxMonthly - userStatsStore.usedCredits);
+    const remainingCredits = isOwner ? 999999 : Math.max(0, maxMonthly - userStatsStore.usedCredits);
 
-    if (remainingCredits < cost) {
+    if (!isOwner && remainingCredits < cost) {
       return res.status(403).json({
         error: 'INSUFFICIENT_CREDITS',
         message: `Not enough credits! Generating an ${toolType.toUpperCase()} requires ${cost} Credits, but you only have ${remainingCredits} Available Credits.`,
@@ -399,7 +406,9 @@ app.post('/api/design-studio/generate', async (req, res) => {
       });
     }
 
-    userStatsStore.usedCredits += cost;
+    if (!isOwner) {
+      userStatsStore.usedCredits += cost;
+    }
     const finalPrompt = compiledPrompt || prompt || `${toolType} design for ${mainHeading || ''}, style: ${style}`;
 
     try {
@@ -937,6 +946,35 @@ app.get('/api/supabase/schema', async (_req, res) => {
       { name: 'settings', feature: 'extra key-value settings', columns: ['id', 'created_at'] }
     ]
   });
+});
+
+// Database Migration & Seed Endpoint
+const handleMigration = async (_req: express.Request, res: express.Response) => {
+  try {
+    const result = await runFullDatabaseMigration();
+    return res.json({
+      success: true,
+      message: 'Full database migration and seed update completed successfully.',
+      ...result
+    });
+  } catch (err: any) {
+    console.error('[DATABASE MIGRATION API ERROR]:', err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Database migration failed'
+    });
+  }
+};
+
+app.post('/api/admin/migrate-database', handleMigration);
+app.post('/api/db/migrate', handleMigration);
+app.get('/api/admin/migrate-database/status', handleMigration);
+
+// Run initial migration asynchronously on server boot
+runFullDatabaseMigration().then(res => {
+  console.log('[SERVER BOOT] Full Database Migration & Seed Completed:', res.success);
+}).catch(err => {
+  console.warn('[SERVER BOOT] Initial database migration note:', err?.message);
 });
 
 // Get dynamic configuration

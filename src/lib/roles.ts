@@ -18,11 +18,11 @@ export function isOwnerEmail(email?: string | null): boolean {
 }
 
 export function getUserRole(email?: string | null, plan?: string, explicitRole?: string): UserRole {
-  if (explicitRole === 'Owner' || explicitRole === 'Admin' || explicitRole === 'Moderator' || explicitRole === 'Premium User' || explicitRole === 'Free User') {
-    return explicitRole as UserRole;
-  }
   if (isOwnerEmail(email)) {
     return 'Owner';
+  }
+  if (explicitRole === 'Owner' || explicitRole === 'Admin' || explicitRole === 'Moderator' || explicitRole === 'Premium User' || explicitRole === 'Free User') {
+    return explicitRole as UserRole;
   }
   if (email && (email.toLowerCase().includes('admin@virjoy.ai') || email.toLowerCase().includes('admin@rishaan.com'))) {
     return 'Admin';

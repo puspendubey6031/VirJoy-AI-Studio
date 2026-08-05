@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import { getAuthCallbackUrl } from '../lib/baseUrl';
 import {
   Lock,
   Mail,
@@ -51,7 +52,10 @@ export const AuthVerificationGate: React.FC<AuthVerificationGateProps> = ({
     setEmailNotice('');
     const { error } = await supabase.auth.resend({
       type: 'signup',
-      email: userEmail
+      email: userEmail,
+      options: {
+        emailRedirectTo: getAuthCallbackUrl()
+      }
     });
     setIsResendingEmail(false);
     if (error) {
