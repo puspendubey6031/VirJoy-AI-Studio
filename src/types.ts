@@ -1,3 +1,5 @@
+export type UserRole = 'Owner' | 'Admin' | 'Moderator' | 'Premium User' | 'Free User';
+
 export type PlanKey = 'Free' | '₹199' | '₹399' | '₹799';
 
 export interface FeatureLockRule {
@@ -284,6 +286,7 @@ export interface AdminUserItem {
   country: string;
   joinDate: string;
   lastActive: string;
+  role?: UserRole;
   accountType: 'Free' | 'Pro' | 'Enterprise';
   subscriptionStatus: 'Active' | 'Cancelled' | 'Expired' | 'Trial';
   credits: number;
@@ -661,6 +664,75 @@ export interface GlobalAIJob {
   completedAt?: string | null;
 }
 
+export interface DeveloperModeConfig {
+  enabled: boolean;
+  testPaymentMode: boolean;
+  forcePremiumMode: boolean;
+  apiDebugEnabled: boolean;
+  creditDebugEnabled: boolean;
+  aiUsageMonitorEnabled: boolean;
+  costMonitorEnabled: boolean;
+  errorLogsEnabled: boolean;
+}
+
+export interface MarketplaceItem {
+  id: string;
+  name: string;
+  category: 'Prompt Template' | 'Video Preset' | 'Voice Persona' | 'AI Plugin' | 'Graphic Style';
+  description: string;
+  creditsCost: number;
+  author: string;
+  downloads: number;
+  rating: number;
+  isOfficial: boolean;
+  enabled: boolean;
+  imageUrl?: string;
+  createdAt: string;
+}
+
+export interface CommissionItem {
+  id: string;
+  partnerId: string;
+  partnerName: string;
+  partnerEmail: string;
+  commissionRatePercent: number;
+  totalEarnedINR: number;
+  pendingPayoutINR: number;
+  status: 'Active' | 'Paused' | 'Pending Review';
+  referralCount: number;
+  lastPayoutDate?: string;
+}
+
+export interface ToolItem {
+  id: string;
+  name: string;
+  key: string;
+  category: 'Video' | 'Graphics' | 'Audio' | 'Utility';
+  minRole: UserRole;
+  minPlan: PlanKey | string;
+  creditsPerUse: number;
+  enabled: boolean;
+  description: string;
+  iconName?: string;
+}
+
+export interface ToolManagerConfig {
+  tools: ToolItem[];
+}
+
+export interface WebAppManagerConfig {
+  appName: string;
+  appTitle: string;
+  appDescription: string;
+  primaryDomain: string;
+  maintenanceMode: boolean;
+  allowPublicSignups: boolean;
+  enableGuestMode: boolean;
+  defaultUserRole: UserRole;
+  metaKeywords: string[];
+  ownerEmail: string;
+}
+
 export interface AppConfig {
   plans: Record<string, PlanConfig>;
   subscriptionLockConfig?: SubscriptionLockConfig;
@@ -691,6 +763,11 @@ export interface AppConfig {
   pwaConfig?: PWAConfig;
   globalProcessingConfig?: GlobalProcessingConfig;
   legalPolicies?: LegalPoliciesConfig;
+  developerModeConfig?: DeveloperModeConfig;
+  marketplaceItems?: MarketplaceItem[];
+  commissionItems?: CommissionItem[];
+  toolManagerConfig?: ToolManagerConfig;
+  webAppManagerConfig?: WebAppManagerConfig;
 }
 
 export interface Scene {
@@ -762,6 +839,9 @@ export interface AuthUser {
   email: string;
   name?: string;
   phone?: string;
+  role?: UserRole;
+  isOwner?: boolean;
+  isAdmin?: boolean;
   emailVerified?: boolean;
   phoneVerified?: boolean;
   avatarUrl?: string;
@@ -771,6 +851,12 @@ export interface AuthUser {
 
 export interface UserStats {
   userId: string;
+  email?: string;
+  userEmail?: string;
+  role?: UserRole;
+  isOwner?: boolean;
+  isAdmin?: boolean;
+  developerMode?: boolean;
   currentPlan: PlanKey;
   usedCredits: number;
   monthlyCredits: number;

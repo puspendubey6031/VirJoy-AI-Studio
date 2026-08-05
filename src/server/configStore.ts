@@ -924,6 +924,108 @@ export const defaultConfig: AppConfig = {
       product_extraction: 'Scraping product metadata, images & features from store URL...',
       default: 'Processing your request with VirJoy AI Neural Engine...'
     }
+  },
+  developerModeConfig: {
+    enabled: true,
+    testPaymentMode: false,
+    forcePremiumMode: false,
+    apiDebugEnabled: true,
+    creditDebugEnabled: true,
+    aiUsageMonitorEnabled: true,
+    costMonitorEnabled: true,
+    errorLogsEnabled: true
+  },
+  marketplaceItems: [
+    {
+      id: 'mp-1',
+      name: 'Cyberpunk Reels Preset',
+      category: 'Video Preset',
+      description: 'High contrast neon color grade with glitch transition effects for short videos.',
+      creditsCost: 0,
+      author: 'VirJoy Official',
+      downloads: 1420,
+      rating: 4.9,
+      isOfficial: true,
+      enabled: true,
+      createdAt: '2026-08-01'
+    },
+    {
+      id: 'mp-2',
+      name: 'E-commerce Ad Voiceover Pack',
+      category: 'Voice Persona',
+      description: 'Upbeat energetic sales pitch neural voices tailored for product showcases.',
+      creditsCost: 5,
+      author: 'AudioLab AI',
+      downloads: 890,
+      rating: 4.8,
+      isOfficial: false,
+      enabled: true,
+      createdAt: '2026-08-02'
+    },
+    {
+      id: 'mp-3',
+      name: '4K Thumbnail Glow FX',
+      category: 'Graphic Style',
+      description: 'Automatic high-contrast subject outline and YouTube-optimized headline typography.',
+      creditsCost: 2,
+      author: 'VirJoy Official',
+      downloads: 2310,
+      rating: 5.0,
+      isOfficial: true,
+      enabled: true,
+      createdAt: '2026-08-03'
+    }
+  ],
+  commissionItems: [
+    {
+      id: 'comm-1',
+      partnerId: 'partner-101',
+      partnerName: 'Rahul Sharma',
+      partnerEmail: 'rahul.affiliate@gmail.com',
+      commissionRatePercent: 25,
+      totalEarnedINR: 12500,
+      pendingPayoutINR: 3200,
+      status: 'Active',
+      referralCount: 42,
+      lastPayoutDate: '2026-07-28'
+    },
+    {
+      id: 'comm-2',
+      partnerId: 'partner-102',
+      partnerName: 'Priya Verma',
+      partnerEmail: 'priya.creator@gmail.com',
+      commissionRatePercent: 20,
+      totalEarnedINR: 8400,
+      pendingPayoutINR: 1800,
+      status: 'Active',
+      referralCount: 28,
+      lastPayoutDate: '2026-07-30'
+    }
+  ],
+  toolManagerConfig: {
+    tools: [
+      { id: 'tool-1', name: 'AI Video Generator', key: 'videoGenerator', category: 'Video', minRole: 'Free User', minPlan: 'Free', creditsPerUse: 5, enabled: true, description: 'Prompt-to-video & script video generation engine' },
+      { id: 'tool-2', name: 'AI Image & Artwork', key: 'imageGenerator', category: 'Graphics', minRole: 'Free User', minPlan: 'Free', creditsPerUse: 3, enabled: true, description: 'High-res image synthesis with FLUX & Gemini models' },
+      { id: 'tool-3', name: 'Logo & Emblem Creator', key: 'logoGenerator', category: 'Graphics', minRole: 'Free User', minPlan: 'Free', creditsPerUse: 5, enabled: true, description: 'Vector logo design, badges, and company branding' },
+      { id: 'tool-4', name: 'Banner & Poster Studio', key: 'bannerGenerator', category: 'Graphics', minRole: 'Free User', minPlan: 'Free', creditsPerUse: 5, enabled: true, description: 'Social media headers, display banners, and marketing posters' },
+      { id: 'tool-5', name: 'YouTube Thumbnail Studio', key: 'thumbnailGenerator', category: 'Graphics', minRole: 'Free User', minPlan: 'Free', creditsPerUse: 3, enabled: true, description: 'High CTR thumbnail graphics with auto glow & text' },
+      { id: 'tool-6', name: 'Neural AI Voiceovers', key: 'aiVoiceAccess', category: 'Audio', minRole: 'Free User', minPlan: 'Free', creditsPerUse: 1, enabled: true, description: 'Natural text-to-speech narration in 20+ languages' },
+      { id: 'tool-7', name: 'Auto Subtitles & Captions', key: 'subtitleAccess', category: 'Audio', minRole: 'Free User', minPlan: 'Free', creditsPerUse: 1, enabled: true, description: 'Animated pop-in captions and auto-translation' },
+      { id: 'tool-8', name: 'Idea-to-Video Workflow', key: 'ideaToVideoWorkflow', category: 'Video', minRole: 'Premium User', minPlan: '₹799', creditsPerUse: 20, enabled: true, description: 'Complete automated script, storyboard, and video production' },
+      { id: 'tool-9', name: 'Product URL Extraction', key: 'productUrlExtraction', category: 'Utility', minRole: 'Free User', minPlan: 'Free', creditsPerUse: 5, enabled: true, description: 'Extract e-commerce product title, price & images to video' }
+    ]
+  },
+  webAppManagerConfig: {
+    appName: 'VirJoy AI Studio',
+    appTitle: 'VirJoy AI Studio - AI Video & Graphic Creation Platform',
+    appDescription: 'Create professional 1080p/4K AI videos, thumbnail graphics, neural voices, and marketing banners in seconds.',
+    primaryDomain: 'virjoy.ai',
+    maintenanceMode: false,
+    allowPublicSignups: true,
+    enableGuestMode: true,
+    defaultUserRole: 'Free User',
+    metaKeywords: ['AI Video', 'Gemini Video', 'YouTube Shorts AI', 'Text to Video', 'Thumbnail Generator'],
+    ownerEmail: process.env.OWNER_EMAIL || 'puspendubey6031@gmail.com'
   }
 };
 

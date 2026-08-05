@@ -1,5 +1,6 @@
 import type { GlobalAIJob, GlobalJobType, GlobalJobStage, AppConfig, PlanKey, DesignHistoryItem } from '../types.js';
 import { configStore, designProjectsStore, videoProjectsStore, userStatsStore } from './configStore.js';
+import { isOwnerEmail } from '../lib/roles.js';
 import {
   generateImageWithFallback,
   generateSpeechWithFallback,
@@ -62,6 +63,11 @@ function getFeatureLockKey(jobType: GlobalJobType): string {
 
 // Check feature lock & user plan credits
 export function checkJobEligibility(jobType: GlobalJobType, userPlan: string, cost: number) {
+  // If Owner account, bypass all credit and feature lock restrictions
+  if (isOwnerEmail(userStatsStore.email) || userStatsStore.isOwner || userStatsStore.role === 'Owner') {
+    return { allowed: true, maxMonthly: 999999, currentPlanConfig: { monthlyCredits: 999999 } };
+  }
+
   const config = configStore.get();
   const lockConfig = config.subscriptionLockConfig;
   const featureKey = getFeatureLockKey(jobType);
@@ -95,6 +101,11 @@ export function checkJobEligibility(jobType: GlobalJobType, userPlan: string, co
 
 // Deduct credits for a job
 export function deductJobCredits(cost: number, jobId: string, title: string) {
+  // Ignore credit deduction for Owner
+  if (isOwnerEmail(userStatsStore.email) || userStatsStore.isOwner || userStatsStore.role === 'Owner') {
+    return;
+  }
+
   const config = configStore.get();
   const currentPlanConfig = config.plans[userStatsStore.currentPlan] || config.plans.Free;
   const maxMonthly = currentPlanConfig.monthlyCredits || currentPlanConfig.maxMonthlyDurationSeconds || 30;

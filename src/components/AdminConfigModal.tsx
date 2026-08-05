@@ -31,6 +31,11 @@ import { LegalPoliciesManagerTab } from './admin/LegalPoliciesManagerTab';
 import { OnboardingManagerTab } from './admin/OnboardingManagerTab';
 import { FeedbackManagerTab } from './admin/FeedbackManagerTab';
 import { SystemHealthTab } from './admin/SystemHealthTab';
+import { DeveloperModeTab } from './admin/DeveloperModeTab';
+import { MarketplaceManagerTab } from './admin/MarketplaceManagerTab';
+import { CommissionManagerTab } from './admin/CommissionManagerTab';
+import { ToolManagerTab } from './admin/ToolManagerTab';
+import { WebAppManagerTab } from './admin/WebAppManagerTab';
 import {
   X,
   Settings,
@@ -38,6 +43,12 @@ import {
   Trash2,
   Tv,
   Cpu,
+  ShoppingBag,
+  Percent,
+  Wrench,
+  Globe,
+  Code,
+  Crown,
   RefreshCw,
   Check,
   Smartphone,
@@ -61,7 +72,6 @@ import {
   MessageSquare,
   RotateCcw,
   CheckCircle2,
-  Crown,
   Database,
   Palette,
   Coins,
@@ -75,6 +85,8 @@ interface AdminConfigModalProps {
   onUpdateConfig: (newConfig: AppConfig, adminKey?: string) => void;
   onResetCredits: () => void;
   isAdmin?: boolean;
+  userEmail?: string;
+  isOwner?: boolean;
 }
 
 interface DashboardStats {
@@ -98,7 +110,9 @@ export const AdminConfigModal: React.FC<AdminConfigModalProps> = ({
   config,
   onUpdateConfig,
   onResetCredits,
-  isAdmin = false
+  isAdmin = false,
+  userEmail,
+  isOwner = false
 }) => {
   if (!isOpen) return null;
 
@@ -138,6 +152,11 @@ export const AdminConfigModal: React.FC<AdminConfigModalProps> = ({
   });
 
   const [activeTab, setActiveTab] = useState<
+    | 'developer_mode'
+    | 'marketplace'
+    | 'commissions'
+    | 'tool_manager'
+    | 'webapp_manager'
     | 'onboarding'
     | 'feedback'
     | 'system_health'
@@ -652,6 +671,50 @@ export const AdminConfigModal: React.FC<AdminConfigModalProps> = ({
           <>
             {/* Tab Navigation Bar */}
             <div className="flex items-center gap-2 border-b border-slate-800 py-3 overflow-x-auto shrink-0">
+              {(isOwner || userEmail === 'puspendubey6031@gmail.com') && (
+                <button
+                  onClick={() => setActiveTab('developer_mode')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                    activeTab === 'developer_mode'
+                      ? 'bg-gradient-to-r from-amber-500 to-indigo-600 text-white shadow-lg'
+                      : 'bg-amber-500/10 text-amber-300 border border-amber-500/30 hover:bg-amber-500/20'
+                  }`}
+                >
+                  <Code className="w-3.5 h-3.5 text-amber-400" /> 👑 Developer Mode
+                </button>
+              )}
+              <button
+                onClick={() => setActiveTab('marketplace')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                  activeTab === 'marketplace' ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-950 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <ShoppingBag className="w-3.5 h-3.5 text-indigo-400" /> Marketplace
+              </button>
+              <button
+                onClick={() => setActiveTab('commissions')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                  activeTab === 'commissions' ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-950 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Percent className="w-3.5 h-3.5 text-emerald-400" /> Commissions
+              </button>
+              <button
+                onClick={() => setActiveTab('tool_manager')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                  activeTab === 'tool_manager' ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-950 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Wrench className="w-3.5 h-3.5 text-purple-400" /> Tool Manager
+              </button>
+              <button
+                onClick={() => setActiveTab('webapp_manager')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
+                  activeTab === 'webapp_manager' ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-950 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Globe className="w-3.5 h-3.5 text-indigo-400" /> Web App Manager
+              </button>
               <button
                 onClick={() => setActiveTab('onboarding')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap ${
@@ -952,6 +1015,64 @@ export const AdminConfigModal: React.FC<AdminConfigModalProps> = ({
 
             {/* Tab Body */}
             <div className="flex-1 overflow-y-auto py-4 space-y-6">
+
+              {activeTab === 'developer_mode' && (
+                <DeveloperModeTab
+                  config={localConfig}
+                  onUpdateConfig={(updated) => {
+                    setLocalConfig(updated);
+                    onUpdateConfig(updated);
+                  }}
+                  showToast={(msg) => setToastMessage(msg)}
+                  isOwner={isOwner || userEmail === 'puspendubey6031@gmail.com'}
+                />
+              )}
+
+              {activeTab === 'marketplace' && (
+                <MarketplaceManagerTab
+                  marketplaceItems={localConfig.marketplaceItems || []}
+                  onChange={(updatedItems) => {
+                    const updated = { ...localConfig, marketplaceItems: updatedItems };
+                    setLocalConfig(updated);
+                    onUpdateConfig(updated);
+                  }}
+                  showToast={(msg) => setToastMessage(msg)}
+                />
+              )}
+
+              {activeTab === 'commissions' && (
+                <CommissionManagerTab
+                  commissionItems={localConfig.commissionItems || []}
+                  onChange={(updatedComms) => {
+                    const updated = { ...localConfig, commissionItems: updatedComms };
+                    setLocalConfig(updated);
+                    onUpdateConfig(updated);
+                  }}
+                  showToast={(msg) => setToastMessage(msg)}
+                />
+              )}
+
+              {activeTab === 'tool_manager' && (
+                <ToolManagerTab
+                  config={localConfig}
+                  onUpdateConfig={(updated) => {
+                    setLocalConfig(updated);
+                    onUpdateConfig(updated);
+                  }}
+                  showToast={(msg) => setToastMessage(msg)}
+                />
+              )}
+
+              {activeTab === 'webapp_manager' && (
+                <WebAppManagerTab
+                  config={localConfig}
+                  onUpdateConfig={(updated) => {
+                    setLocalConfig(updated);
+                    onUpdateConfig(updated);
+                  }}
+                  showToast={(msg) => setToastMessage(msg)}
+                />
+              )}
               
               {/* TAB: PWA MOBILE APP MANAGEMENT */}
               {activeTab === 'pwa' && (

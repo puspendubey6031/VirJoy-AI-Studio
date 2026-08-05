@@ -21,6 +21,7 @@ import {
 } from './components/UserMenuAndModals';
 import { DesignStudioForm } from './components/DesignStudioForm';
 import { usePWA } from './hooks/usePWA';
+import { getUserRole, getRolePermissions, isOwnerEmail } from './lib/roles';
 import { PWAInstallModal } from './components/pwa/PWAInstallModal';
 import { PWAOfflineBanner } from './components/pwa/PWAOfflineBanner';
 import { PWAUpdateModal } from './components/pwa/PWAUpdateModal';
@@ -604,14 +605,11 @@ export default function App() {
     }
   }, [sessionGateState]);
 
-  const isAdmin = Boolean(
-    authUser?.isAdmin ||
-    authUser?.role === 'admin' ||
-    authUser?.email?.toLowerCase() === 'admin@virjoy.ai' ||
-    authUser?.email?.toLowerCase() === 'admin@rishaan.com' ||
-    supabaseUserRaw?.user_metadata?.role === 'admin' ||
-    supabaseUserRaw?.user_metadata?.isAdmin === true
-  );
+  const userEmail = authUser?.email || supabaseUserRaw?.email || '';
+  const userRole = getUserRole(userEmail, authUser?.accountType || 'Free', authUser?.role);
+  const rolePermissions = getRolePermissions(userRole);
+  const isOwner = userRole === 'Owner';
+  const isAdmin = rolePermissions.adminDashboardAccess;
 
   // If Maintenance Mode is Active and not bypassed by admin
   if (config.maintenanceConfig?.enabled && !isAdminBypassed) {
@@ -902,6 +900,8 @@ export default function App() {
         onUpdateConfig={handleUpdateConfig}
         onResetCredits={handleResetCredits}
         isAdmin={isAdmin}
+        userEmail={userEmail}
+        isOwner={isOwner}
       />
 
       <TimelineEditor
