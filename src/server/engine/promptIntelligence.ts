@@ -6,16 +6,17 @@ export async function analyzePromptIntelligence(
   targetDurationSeconds?: number,
   apiKey?: string
 ): Promise<PromptIntelligenceResult> {
-  // If Gemini API Key is available, use Gemini 2.0 Flash for structured JSON extraction
-  if (apiKey) {
+  const geminiKey = apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  // If Gemini API Key is available, use Gemini for structured JSON extraction
+  if (geminiKey) {
     try {
       const ai = new GoogleGenAI({
-        apiKey,
+        apiKey: geminiKey,
         httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
       });
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-2.5-flash',
         contents: `Perform deep prompt intelligence analysis for an AI Video Generation Engine (VirJoy AI).
 User Prompt: "${prompt}"
 User Requested Duration (optional): ${targetDurationSeconds || 'Auto-detect'}

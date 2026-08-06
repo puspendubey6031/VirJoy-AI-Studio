@@ -152,7 +152,7 @@ export const defaultConfig: AppConfig = {
   },
   aiProvider: {
     provider: 'gemini',
-    model: 'gemini-3.6-flash',
+    model: 'gemini-2.5-flash',
     systemPrompt: 'You are VirJoy AI, a world-class prompt-driven video producer creating high-converting short-form videos with engaging scenes, voiceover narration, visual cues, and auto-subtitles.',
     fallbackEnabled: true
   },
@@ -371,9 +371,9 @@ export const defaultConfig: AppConfig = {
     providers: [
       {
         id: 'prov-gemini',
-        name: 'Google Gemini 3.6 Flash',
+        name: 'Google Gemini 2.5 Flash',
         providerType: 'gemini',
-        model: 'gemini-3.6-flash',
+        model: 'gemini-2.5-flash',
         endpoint: 'https://generativelanguage.googleapis.com/v1beta',
         apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY || '',
         enabled: true,

@@ -1,4 +1,5 @@
 import type { GranularSceneSpec, MediaAssetSpec } from './types.js';
+import { generateImageWithFallback } from '../providers/imageProvider.js';
 
 interface MediaManagerCacheItem {
   cacheKey: string;
@@ -10,28 +11,25 @@ class MediaManager {
   private cache: Map<string, MediaManagerCacheItem> = new Map();
   private maxCacheSize = 200;
 
-  // Primary Priority: User Upload (1) > AI Generated (2) > Pexels (3) > Pixabay (4) > Unsplash (5)
+  // Primary Priority: User Upload (1) > AI Generated (2) > Stock Fallback (3)
   public async collectMediaAssetsForScenes(
     scenes: GranularSceneSpec[],
     userUploads?: string[]
   ): Promise<{ mediaAssets: MediaAssetSpec[]; updatedScenes: GranularSceneSpec[] }> {
-    const collectedAssets: MediaAssetSpec[] = [];
-    const updatedScenes: GranularSceneSpec[] = [];
-
-    for (let i = 0; i < scenes.length; i++) {
-      const scene = scenes[i];
+    const tasks = scenes.map(async (scene, i) => {
       const cacheKey = this.generateCacheKey(scene.visualPrompt);
 
       // Check Cache System first
       if (this.cache.has(cacheKey)) {
         const cachedItem = this.cache.get(cacheKey)!;
-        collectedAssets.push(cachedItem.asset);
-        updatedScenes.push({
-          ...scene,
-          assignedAssetUrl: cachedItem.asset.url,
-          assignedAssetSource: 'cached'
-        });
-        continue;
+        return {
+          asset: cachedItem.asset,
+          updatedScene: {
+            ...scene,
+            assignedAssetUrl: cachedItem.asset.url,
+            assignedAssetSource: 'cached' as const
+          }
+        };
       }
 
       let chosenAsset: MediaAssetSpec | null = null;
@@ -48,7 +46,32 @@ class MediaManager {
         };
       }
 
-      // Priority 2: Stock Media Collection (Pexels / Pixabay / Unsplash placeholder)
+      // Priority 2: Real AI Image Generation
+      if (!chosenAsset) {
+        try {
+          const aiImageResult = await generateImageWithFallback({
+            prompt: scene.visualPrompt || scene.narrationText,
+            aspectRatio: '16:9'
+          });
+
+          if (aiImageResult && aiImageResult.imageUrl) {
+            chosenAsset = {
+              id: `asset_ai_${i}_${Date.now()}`,
+              source: 'ai_generated',
+              assetType: 'image',
+              url: aiImageResult.imageUrl,
+              thumbnailUrl: aiImageResult.imageUrl,
+              cacheKey,
+              priority: 2,
+              attribution: `AI Generated via ${aiImageResult.providerUsed} (${aiImageResult.modelUsed})`
+            };
+          }
+        } catch (e) {
+          console.warn(`[MediaManager] AI image generation for scene ${i + 1} failed, using stock fallback:`, e);
+        }
+      }
+
+      // Priority 3: Stock Media Collection Fallback
       if (!chosenAsset) {
         const stockUrl = this.resolveStockMediaUrl(scene.visualPrompt, i);
         chosenAsset = {
@@ -66,13 +89,19 @@ class MediaManager {
       // Store in Cache Engine
       this.storeInCache(cacheKey, chosenAsset);
 
-      collectedAssets.push(chosenAsset);
-      updatedScenes.push({
-        ...scene,
-        assignedAssetUrl: chosenAsset.url,
-        assignedAssetSource: chosenAsset.source
-      });
-    }
+      return {
+        asset: chosenAsset,
+        updatedScene: {
+          ...scene,
+          assignedAssetUrl: chosenAsset.url,
+          assignedAssetSource: chosenAsset.source
+        }
+      };
+    });
+
+    const results = await Promise.all(tasks);
+    const collectedAssets = results.map(r => r.asset);
+    const updatedScenes = results.map(r => r.updatedScene);
 
     return { mediaAssets: collectedAssets, updatedScenes };
   }

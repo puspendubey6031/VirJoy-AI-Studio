@@ -61,7 +61,7 @@ Aspect Ratio: ${aspectRatio}`;
     try {
       const ai = new GoogleGenAI({ apiKey: geminiKey });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-2.5-flash',
         contents: `${systemInstruction}\n\n${userPrompt}\n\nReturn JSON ONLY without markdown backticks.`,
       });
 
@@ -81,7 +81,7 @@ Aspect Ratio: ${aspectRatio}`;
             transition: s.transition || 'fade'
           })),
           providerUsed: 'Gemini',
-          modelUsed: 'gemini-2.0-flash'
+          modelUsed: 'gemini-2.5-flash'
         };
       }
     } catch (err: any) {

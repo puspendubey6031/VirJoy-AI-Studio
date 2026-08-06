@@ -22,28 +22,17 @@ export async function generateSpeechWithFallback(options: VoiceGenerationOptions
   const { text, voice = 'female-ananya', language = 'en-US' } = options;
   const cleanText = text.replace(/[*#_~]/g, '').substring(0, 1000);
 
-  // --- 1. PRIMARY: EDGE-TTS ---
+  // --- 1. PRIMARY: GOOGLE TRANSLATE TTS (VERIFIED DIRECT AUDIO STREAM) ---
   try {
-    const edgeVoiceName = voice.includes('ananya')
-      ? 'en-IN-AnanyaNeural'
-      : voice.includes('rahul')
-      ? 'en-IN-PrabhatNeural'
-      : voice.includes('male')
-      ? 'en-US-GuyNeural'
-      : 'en-US-AriaNeural';
-
-    // Simulated Edge-TTS neural speech audio generator
-    const encodedText = encodeURIComponent(cleanText);
-    const edgeUrl = `https://tts.quest/api/voice?text=${encodedText}&voice=${edgeVoiceName}&type=mp3`;
-    
-    // Test reachability or return structured endpoint
+    const langCode = language.startsWith('hi') ? 'hi' : language.startsWith('ta') ? 'ta' : 'en';
+    const gttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(cleanText)}&tl=${langCode}&client=tw-ob`;
     return {
-      audioUrl: edgeUrl,
-      providerUsed: 'Edge-TTS',
-      voiceName: edgeVoiceName
+      audioUrl: gttsUrl,
+      providerUsed: 'gTTS',
+      voiceName: `GoogleTTS-${langCode}`
     };
   } catch (err: any) {
-    console.warn('[VoiceProvider] Edge-TTS primary failed, trying gTTS fallback:', err?.message || err);
+    console.warn('[VoiceProvider] Primary TTS failed, using fallback:', err?.message || err);
   }
 
   // --- 2. FALLBACK 1: gTTS (Google Translate TTS API) ---

@@ -60,9 +60,60 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const bgAudioRef = useRef<HTMLAudioElement | null>(null);
+  const imageCacheRef = useRef<Record<string, HTMLImageElement>>({});
+  const [, setRenderTrigger] = useState(0);
 
   const totalDuration = project.scenes.reduce((acc, s) => acc + (s.duration || 4), 0);
   const currentScene = project.scenes[currentSceneIndex] || project.scenes[0];
+
+  // Preload and cache images
+  useEffect(() => {
+    project.scenes.forEach(scene => {
+      if (scene.imageUrl && !imageCacheRef.current[scene.imageUrl]) {
+        const img = new Image();
+        if (!scene.imageUrl.startsWith('data:')) {
+          img.crossOrigin = 'anonymous';
+        }
+        img.src = scene.imageUrl;
+        img.onload = () => {
+          imageCacheRef.current[scene.imageUrl!] = img;
+          setRenderTrigger(n => n + 1);
+        };
+        img.onerror = () => {
+          // Retry without crossOrigin
+          const retryImg = new Image();
+          retryImg.src = scene.imageUrl!;
+          retryImg.onload = () => {
+            imageCacheRef.current[scene.imageUrl!] = retryImg;
+            setRenderTrigger(n => n + 1);
+          };
+        };
+      }
+    });
+  }, [project.scenes]);
+
+  // Handle Background Music Playback
+  useEffect(() => {
+    const musicUrl = currentScene?.backgroundMusicUrl || project.inputs?.backgroundMusicUrl || 'https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8c8a73420.mp3?filename=cinematic-atmosphere-score-10646.mp3';
+    if (isPlaying && !isMuted) {
+      if (!bgAudioRef.current) {
+        bgAudioRef.current = new Audio(musicUrl);
+        bgAudioRef.current.loop = true;
+        bgAudioRef.current.volume = 0.25;
+      }
+      bgAudioRef.current.play().catch(() => {});
+    } else {
+      if (bgAudioRef.current) {
+        bgAudioRef.current.pause();
+      }
+    }
+    return () => {
+      if (bgAudioRef.current) {
+        bgAudioRef.current.pause();
+      }
+    };
+  }, [isPlaying, isMuted, currentScene, project]);
 
   // Speech narration synth
   const speakNarration = (text: string) => {
@@ -133,77 +184,150 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, width, height);
 
-    // Dynamic animated glowing rings
-    const pulse = Math.sin(currentTime * 3) * 20;
-    ctx.beginPath();
-    ctx.arc(width / 2, height / 2, 80 + pulse, 0, Math.PI * 2);
-    ctx.strokeStyle = 'rgba(99, 102, 241, 0.2)';
-    ctx.lineWidth = 4;
-    ctx.stroke();
+    const cachedImg = currentScene?.imageUrl ? imageCacheRef.current[currentScene.imageUrl] : null;
 
-    // Scene Title Header
-    ctx.fillStyle = '#a5b4fc';
-    ctx.font = 'bold 14px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText(currentScene?.title?.toUpperCase() || 'VIRJOY SCENE', width / 2, 35);
+    // If Scene has AI Generated Image URL, draw with camera motion animation
+    if (cachedImg && cachedImg.complete && cachedImg.naturalWidth > 0) {
+      ctx.save();
 
-    // Scene Visual Description Center Box
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
-    ctx.strokeStyle = 'rgba(129, 140, 248, 0.3)';
-    ctx.lineWidth = 1;
-    const boxW = width * 0.8;
-    const boxH = height * 0.35;
-    ctx.fillRect((width - boxW) / 2, (height - boxH) / 2 - 10, boxW, boxH);
-    ctx.strokeRect((width - boxW) / 2, (height - boxH) / 2 - 10, boxW, boxH);
+      // Calculate Camera Motion Transform (zoom_in, pan_right, etc.)
+      const motion = currentScene.cameraMotion || 'zoom_in';
+      const progress = (currentTime % (currentScene.duration || 4)) / (currentScene.duration || 4);
 
-    // Visual prompt label inside
-    ctx.fillStyle = '#e2e8f0';
-    ctx.font = '13px sans-serif';
-    ctx.textAlign = 'center';
-    const visualText = currentScene?.visualPrompt || 'Dynamic Motion Frame';
-    ctx.fillText(visualText.length > 50 ? visualText.substring(0, 50) + '...' : visualText, width / 2, height / 2 - 10);
+      let scale = 1.0;
+      let offsetX = 0;
+      let offsetY = 0;
 
-    // Subtitle Caption Box with Dynamic Position, Font, Color, and Size
-    if (currentScene?.caption && project.inputs.subtitleEnabled !== false) {
-      const subColor = project.inputs.subtitleColor || '#FACC15';
-      const subFont = project.inputs.subtitleFont || 'sans-serif';
-      const subPos = project.inputs.subtitlePosition || 'Bottom';
-      const subSize = project.inputs.subtitleSize || 'Medium';
-
-      let fontPx = 15;
-      if (subSize === 'Small') fontPx = 12;
-      else if (subSize === 'Large') fontPx = 18;
-      else if (subSize === 'Extra Large') fontPx = 22;
-
-      let boxY = height - 70;
-      let textY = height - 42;
-
-      if (subPos === 'Top') {
-        boxY = 20;
-        textY = 48;
-      } else if (subPos === 'Center') {
-        boxY = height / 2 - 22;
-        textY = height / 2 + 5;
+      if (motion === 'zoom_in') {
+        scale = 1.0 + progress * 0.12;
+      } else if (motion === 'zoom_out') {
+        scale = 1.15 - progress * 0.12;
+      } else if (motion === 'pan_right') {
+        scale = 1.08;
+        offsetX = -progress * 25;
+      } else if (motion === 'pan_left') {
+        scale = 1.08;
+        offsetX = progress * 25;
+      } else if (motion === 'drone_flyby') {
+        scale = 1.0 + progress * 0.15;
+        offsetY = -progress * 15;
+      } else {
+        scale = 1.04;
       }
 
-      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-      ctx.fillRect(20, boxY, width - 40, 48);
-      ctx.strokeStyle = subColor;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(20, boxY, width - 40, 48);
+      ctx.translate(width / 2 + offsetX, height / 2 + offsetY);
+      ctx.scale(scale, scale);
+      ctx.drawImage(cachedImg, -width / 2, -height / 2, width, height);
+      ctx.restore();
 
-      ctx.fillStyle = subColor;
-      ctx.font = `bold ${fontPx}px ${subFont}, sans-serif`;
+      // Overlay camera motion indicator badge
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.65)';
+      ctx.fillRect(15, 15, 120, 24);
+      ctx.fillStyle = '#a5b4fc';
+      ctx.font = '10px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(currentScene.caption, width / 2, textY);
+      ctx.fillText(`🎥 ${motion.toUpperCase()}`, 75, 31);
+
+      // Re-draw Subtitles & Watermark over image
+      drawSubtitlesAndWatermark(ctx, width, height);
+    } else if (currentScene?.imageUrl) {
+      // Async image loading placeholder while image loads
+      const img = new Image();
+      if (!currentScene.imageUrl.startsWith('data:')) {
+        img.crossOrigin = 'anonymous';
+      }
+      img.src = currentScene.imageUrl;
+      img.onload = () => {
+        imageCacheRef.current[currentScene.imageUrl!] = img;
+        setRenderTrigger(n => n + 1);
+      };
+      
+      // Fallback ring while loading
+      const pulse = Math.sin(currentTime * 3) * 20;
+      ctx.beginPath();
+      ctx.arc(width / 2, height / 2, 80 + pulse, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.3)';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+
+      drawSubtitlesAndWatermark(ctx, width, height);
+    } else {
+      // Dynamic animated glowing rings
+      const pulse = Math.sin(currentTime * 3) * 20;
+      ctx.beginPath();
+      ctx.arc(width / 2, height / 2, 80 + pulse, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.2)';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+
+      // Scene Title Header
+      ctx.fillStyle = '#a5b4fc';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(currentScene?.title?.toUpperCase() || 'VIRJOY SCENE', width / 2, 35);
+
+      // Scene Visual Description Center Box
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+      ctx.strokeStyle = 'rgba(129, 140, 248, 0.3)';
+      ctx.lineWidth = 1;
+      const boxW = width * 0.8;
+      const boxH = height * 0.35;
+      ctx.fillRect((width - boxW) / 2, (height - boxH) / 2 - 10, boxW, boxH);
+      ctx.strokeRect((width - boxW) / 2, (height - boxH) / 2 - 10, boxW, boxH);
+
+      // Visual prompt label inside
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = '13px sans-serif';
+      ctx.textAlign = 'center';
+      const visualText = currentScene?.visualPrompt || 'Dynamic Motion Frame';
+      ctx.fillText(visualText.length > 50 ? visualText.substring(0, 50) + '...' : visualText, width / 2, height / 2 - 10);
+
+      drawSubtitlesAndWatermark(ctx, width, height);
     }
 
-    // VirJoy Watermark if project is watermarked
-    if (project.watermarked) {
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-      ctx.font = 'bold 11px sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText('⚡ Created with VirJoy AI (Free)', width - 15, 20);
+    function drawSubtitlesAndWatermark(context: CanvasRenderingContext2D, w: number, h: number) {
+      // Subtitle Caption Box with Dynamic Position, Font, Color, and Size
+      if (currentScene?.caption && project.inputs.subtitleEnabled !== false) {
+        const subColor = project.inputs.subtitleColor || '#FACC15';
+        const subFont = project.inputs.subtitleFont || 'sans-serif';
+        const subPos = project.inputs.subtitlePosition || 'Bottom';
+        const subSize = project.inputs.subtitleSize || 'Medium';
+
+        let fontPx = 15;
+        if (subSize === 'Small') fontPx = 12;
+        else if (subSize === 'Large') fontPx = 18;
+        else if (subSize === 'Extra Large') fontPx = 22;
+
+        let boxY = h - 70;
+        let textY = h - 42;
+
+        if (subPos === 'Top') {
+          boxY = 20;
+          textY = 48;
+        } else if (subPos === 'Center') {
+          boxY = h / 2 - 22;
+          textY = h / 2 + 5;
+        }
+
+        context.fillStyle = 'rgba(15, 23, 42, 0.9)';
+        context.fillRect(20, boxY, w - 40, 48);
+        context.strokeStyle = subColor;
+        context.lineWidth = 2;
+        context.strokeRect(20, boxY, w - 40, 48);
+
+        context.fillStyle = subColor;
+        context.font = `bold ${fontPx}px ${subFont}, sans-serif`;
+        context.textAlign = 'center';
+        context.fillText(currentScene.caption, w / 2, textY);
+      }
+
+      // VirJoy Watermark if project is watermarked
+      if (project.watermarked) {
+        context.fillStyle = 'rgba(255, 255, 255, 0.8)';
+        context.font = 'bold 11px sans-serif';
+        context.textAlign = 'right';
+        context.fillText('⚡ Created with VirJoy AI (Free)', w - 15, 25);
+      }
     }
   }, [currentScene, currentTime, project]);
 

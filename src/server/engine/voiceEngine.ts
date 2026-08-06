@@ -1,4 +1,5 @@
 import type { VoiceEngineSpec } from './types.js';
+import { generateSpeechWithFallback } from '../providers/voiceProvider.js';
 
 export class UniversalVoiceEngine {
   private defaultProvider: VoiceEngineSpec['provider'] = 'edge_tts';
@@ -20,6 +21,19 @@ export class UniversalVoiceEngine {
     // Average speech rate = 2.5 words per second
     const estimatedDuration = Math.max(2, Math.round((wordCount / 2.5) * 10) / 10);
 
+    let audioBufferUrl = '';
+    try {
+      const speechRes = await generateSpeechWithFallback({
+        text,
+        voice: voiceId,
+        language
+      });
+      audioBufferUrl = speechRes.audioUrl;
+    } catch (e) {
+      console.warn('[UniversalVoiceEngine] Speech generation fallback note:', e);
+      audioBufferUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text.substring(0, 200))}&tl=en&client=tw-ob`;
+    }
+
     return {
       provider,
       voiceId,
@@ -28,7 +42,7 @@ export class UniversalVoiceEngine {
       emotion: 'Energetic & Professional',
       speedMultiplier: 1.0,
       pitchMultiplier: 1.0,
-      audioBufferUrl: `https://assets.virjoy.ai/audio/synthesized_${provider}_${voiceId}.mp3`,
+      audioBufferUrl,
       audioDurationSeconds: estimatedDuration
     };
   }

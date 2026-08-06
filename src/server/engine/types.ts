@@ -140,6 +140,7 @@ export interface EngineCheckpoint {
   subtitleSpec?: SubtitleEngineSpec;
   timelinePackage?: TimelinePackage;
   renderPackage?: RenderInstructionPackage;
+  renderedVideoUrl?: string;
   costBreakdown: {
     promptTokens: number;
     completionTokens: number;

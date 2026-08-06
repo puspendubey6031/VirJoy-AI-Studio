@@ -41,13 +41,20 @@ export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string
   if (checkpoint.scenes && checkpoint.scenes.length > 0) {
     return checkpoint.scenes.map((s, idx) => ({
       id: s.sceneId || `scene-${idx + 1}-${Date.now()}`,
-      title: `Scene ${s.sceneNumber}: ${s.narrationText.substring(0, 20)}`,
+      title: `Scene ${s.sceneNumber}: ${s.narrationText.substring(0, 25)}`,
       duration: Math.max(2, s.durationSeconds),
       narration: s.narrationText || prompt,
       caption: s.narrationText || 'VirJoy AI',
       visualPrompt: s.visualPrompt || 'Cinematic visual',
       bgGradient: GRADIENTS[idx % GRADIENTS.length],
-      imageUrl: s.assignedAssetUrl || inputs.images?.[idx % (inputs.images.length || 1)] || undefined
+      imageUrl: s.assignedAssetUrl || inputs.images?.[idx % (inputs.images.length || 1)] || undefined,
+      cameraMotion: s.cameraMotion,
+      transitionEffect: s.transitionEffect,
+      visualEffect: s.visualEffect,
+      subtitleStartTime: s.subtitleStartTime,
+      subtitleEndTime: s.subtitleEndTime,
+      voiceAudioUrl: checkpoint.voiceSpec?.audioBufferUrl,
+      backgroundMusicUrl: checkpoint.timelinePackage?.backgroundMusicUrl
     }));
   }
 
@@ -87,7 +94,7 @@ export async function generateIdeaWorkflow(concept: string, apiKey?: string): Pr
       });
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-2.5-flash',
         contents: `You are a viral TikTok/Reels video creator for the ₹799 Ultra Plan in VirJoy AI.
 Take this creative idea concept: "${concept}".
 Generate:

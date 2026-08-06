@@ -780,6 +780,13 @@ export interface Scene {
   bgGradient: string;
   iconName?: string;
   imageUrl?: string;
+  cameraMotion?: string;
+  transitionEffect?: string;
+  visualEffect?: string;
+  subtitleStartTime?: number;
+  subtitleEndTime?: number;
+  voiceAudioUrl?: string;
+  backgroundMusicUrl?: string;
 }
 
 export interface ProductMetadata {

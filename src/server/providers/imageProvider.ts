@@ -103,7 +103,8 @@ export async function generateImageWithFallback(options: ImageGenerationOptions)
             'Authorization': `Bearer ${hfKey}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ inputs: fullPrompt })
+          body: JSON.stringify({ inputs: fullPrompt }),
+          signal: AbortSignal.timeout(2000)
         });
 
         if (res.ok) {
@@ -127,7 +128,8 @@ export async function generateImageWithFallback(options: ImageGenerationOptions)
   const widthParam = aspectRatio === '9:16' ? 720 : aspectRatio === '1:1' ? 1024 : 1280;
   const heightParam = aspectRatio === '9:16' ? 1280 : aspectRatio === '1:1' ? 1024 : 720;
   const seed = Math.floor(Math.random() * 1000000);
-  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(fullPrompt)}?width=${widthParam}&height=${heightParam}&seed=${seed}&nologo=true&model=flux`;
+  const cleanPrompt = prompt.substring(0, 120).replace(/[^a-zA-Z0-9 ]/g, ' ').trim();
+  const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=${widthParam}&height=${heightParam}&seed=${seed}&nologo=true&model=flux`;
 
   return {
     imageUrl: pollinationsUrl,

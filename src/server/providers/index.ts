@@ -51,7 +51,7 @@ export interface ProviderStatusReport {
 export function getProviderStatusReport(): ProviderStatusReport {
   return {
     script: {
-      primary: 'Gemini (gemini-2.0-flash)',
+      primary: 'Gemini (gemini-3.6-flash)',
       fallbacks: ['Groq (llama-3.3-70b-versatile)', 'Cohere (command-r-plus)', 'Mistral (mistral-small-latest)', 'BuiltInRuleEngine'],
       activeKeyConfigured: !!(process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY || process.env.COHERE_API_KEY || process.env.MISTRAL_API_KEY)
     },

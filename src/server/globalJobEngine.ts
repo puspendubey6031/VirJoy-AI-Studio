@@ -445,7 +445,7 @@ async function executeJobPipeline(jobId: string) {
           const { GoogleGenAI } = await import('@google/genai');
           const ai = new GoogleGenAI({ apiKey: geminiKey });
           const response = await ai.models.generateContent({
-            model: 'gemini-2.0-flash',
+            model: 'gemini-2.5-flash',
             contents: `Translate the following subtitle caption accurately into ${targetLanguage}. Keep it punchy, concise, and natural for video subtitles (max 12 words). Return ONLY the translated subtitle text without quotes or explanations:\n"${text}"`
           });
           if (response.text) {

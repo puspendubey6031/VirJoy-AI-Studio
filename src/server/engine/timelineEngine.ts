@@ -55,12 +55,13 @@ export class TimelineEngine {
   }
 
   private resolveMusicTrackUrl(mood: string): string {
+    // Royalty-free background music tracks from local static server
     const musicMap: Record<string, string> = {
-      upbeat_electronic: 'https://assets.virjoy.ai/audio/music_upbeat_electronic.mp3',
-      cinematic_synth: 'https://assets.virjoy.ai/audio/music_cinematic_synth.mp3',
-      ambient_chill: 'https://assets.virjoy.ai/audio/music_ambient_chill.mp3',
-      dark_dramatic: 'https://assets.virjoy.ai/audio/music_dark_dramatic.mp3',
-      acoustic_warm: 'https://assets.virjoy.ai/audio/music_acoustic_warm.mp3'
+      upbeat_electronic: '/audio/upbeat.mp3',
+      cinematic_synth: '/audio/cinematic.mp3',
+      ambient_chill: '/audio/ambient.mp3',
+      dark_dramatic: '/audio/dramatic.mp3',
+      acoustic_warm: '/audio/acoustic.mp3'
     };
     return musicMap[mood] || musicMap.cinematic_synth;
   }
