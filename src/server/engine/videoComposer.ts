@@ -158,23 +158,23 @@ export class VideoComposer {
         if (res.ok) {
           const buffer = await res.arrayBuffer();
           fs.writeFileSync(voiceLocalPath, Buffer.from(buffer));
-          voiceSuccess = true;
+          if (await this.isAudioFileUsable(voiceLocalPath)) voiceSuccess = true;
         }
       } catch (err) {
         console.warn('[VideoComposer] Voice audio download failed:', err);
       }
     } else if (timeline.voiceAudioUrl && timeline.voiceAudioUrl.startsWith('/')) {
       const localSource = path.join(process.cwd(), 'public', timeline.voiceAudioUrl);
-      if (fs.existsSync(localSource)) {
+      if (fs.existsSync(localSource) && await this.isAudioFileUsable(localSource)) {
         fs.copyFileSync(localSource, voiceLocalPath);
         voiceSuccess = true;
       }
     }
 
     if (!voiceSuccess) {
-      // Fallback sine wave voice track
-      const genVoice = `ffmpeg -y -f lavfi -i "sine=frequency=300:duration=${timeline.totalDurationSeconds}" -c:a libmp3lame -b:a 128k "${voiceLocalPath}"`;
-      await execAsync(genVoice);
+      // Fallback: sine wave with explicit sample rate and channel count
+      const genVoice = `ffmpeg -y -f lavfi -i "sine=frequency=300:duration=${timeline.totalDurationSeconds}" -ar 44100 -ac 1 -c:a libmp3lame -b:a 128k "${voiceLocalPath}"`;
+      await execAsync(genVoice, { timeout: 30000 });
     }
 
     // 3. Resolve or Download Background Music
@@ -186,22 +186,23 @@ export class VideoComposer {
         if (res.ok) {
           const buffer = await res.arrayBuffer();
           fs.writeFileSync(musicLocalPath, Buffer.from(buffer));
-          musicSuccess = true;
+          if (await this.isAudioFileUsable(musicLocalPath)) musicSuccess = true;
         }
       } catch (err) {
         console.warn('[VideoComposer] Music download failed:', err);
       }
     } else if (timeline.backgroundMusicUrl && timeline.backgroundMusicUrl.startsWith('/')) {
       const localSource = path.join(process.cwd(), 'public', timeline.backgroundMusicUrl);
-      if (fs.existsSync(localSource)) {
+      if (fs.existsSync(localSource) && await this.isAudioFileUsable(localSource)) {
         fs.copyFileSync(localSource, musicLocalPath);
         musicSuccess = true;
       }
     }
 
     if (!musicSuccess) {
-      const genMusic = `ffmpeg -y -f lavfi -i "sine=frequency=180:duration=${timeline.totalDurationSeconds}" -c:a libmp3lame -b:a 128k "${musicLocalPath}"`;
-      await execAsync(genMusic);
+      // Fallback: sine wave with explicit sample rate and channel count
+      const genMusic = `ffmpeg -y -f lavfi -i "sine=frequency=180:duration=${timeline.totalDurationSeconds}" -ar 44100 -ac 1 -c:a libmp3lame -b:a 128k "${musicLocalPath}"`;
+      await execAsync(genMusic, { timeout: 30000 });
     }
 
     // 4. Build Exact FFmpeg Command with Local Files
@@ -222,12 +223,23 @@ export class VideoComposer {
 
     const filterComplex = `"${scalePadFilters}${concatFilter}${audioMixFilter}"`;
 
-    const ffmpegCommand = `ffmpeg -y ${inputs} -i "${voiceLocalPath}" -i "${musicLocalPath}" -filter_complex ${filterComplex} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -shortest "${outputFilePath}"`;
+    const ffmpegCommand = `ffmpeg -y ${inputs} -i "${voiceLocalPath}" -i "${musicLocalPath}" -filter_complex ${filterComplex} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart -shortest "${outputFilePath}"`;
 
-    // 5. Execute FFmpeg Command
-    const { stdout, stderr } = await execAsync(ffmpegCommand);
+    // 5. Execute FFmpeg Command (50 MB stderr buffer; 120 s hard timeout)
+    const { stdout, stderr } = await execAsync(ffmpegCommand, {
+      maxBuffer: 50 * 1024 * 1024,
+      timeout: 120000
+    });
 
+    // 6. Validate output file exists and is not trivially small
+    if (!fs.existsSync(outputFilePath)) {
+      throw new Error(`[VideoComposer] FFmpeg did not produce output file at ${outputFilePath}`);
+    }
     const stats = fs.statSync(outputFilePath);
+    if (stats.size < 10240) {
+      throw new Error(`[VideoComposer] FFmpeg output is too small (${stats.size} bytes) — likely a corrupt or empty render`);
+    }
+
     const durationMs = Date.now() - startTime;
 
     // Cleanup tmp files
@@ -246,6 +258,52 @@ export class VideoComposer {
       durationMs,
       fileSizeBytes: stats.size
     };
+  }
+
+  /**
+   * Quick usability check for an audio file: must exist, be > 1 KB,
+   * and have at least one audio stream with channels > 0.
+   * Returns false on any error so the caller can fall back to a safe sine wave.
+   */
+  private async isAudioFileUsable(filePath: string): Promise<boolean> {
+    try {
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).size < 1024) return false;
+      const { stdout } = await execAsync(
+        `ffprobe -v error -select_streams a:0 -show_entries stream=channels -of csv=p=0 "${filePath}"`,
+        { timeout: 8000, maxBuffer: 64 * 1024 }
+      );
+      const channels = parseInt(stdout.trim() || '0', 10);
+      return channels > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Validate a rendered MP4 with ffprobe.
+   * Returns { valid, hasVideo, hasAudio, duration }.
+   * Never throws — returns valid:false on any probe failure.
+   */
+  public async validateOutputMP4(filePath: string): Promise<{
+    valid: boolean;
+    hasVideo: boolean;
+    hasAudio: boolean;
+    duration: number;
+  }> {
+    try {
+      const { stdout } = await execAsync(
+        `ffprobe -v error -show_streams -of json "${filePath}"`,
+        { timeout: 15000, maxBuffer: 2 * 1024 * 1024 }
+      );
+      const probe = JSON.parse(stdout) as { streams?: { codec_type: string; duration?: string }[] };
+      const streams = probe.streams || [];
+      const hasVideo = streams.some(s => s.codec_type === 'video');
+      const hasAudio = streams.some(s => s.codec_type === 'audio');
+      const duration = parseFloat(streams.find(s => s.codec_type === 'video')?.duration || '0');
+      return { valid: hasVideo, hasVideo, hasAudio, duration };
+    } catch {
+      return { valid: false, hasVideo: false, hasAudio: false, duration: 0 };
+    }
   }
 
   private buildFFmpegScript(timeline: TimelinePackage, resolution: string): string {

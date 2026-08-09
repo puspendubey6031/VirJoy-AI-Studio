@@ -1,0 +1,137 @@
+Now work ONLY on the VirJoy AI Video Engine Pipeline problems identified in the previous functional audit.
+
+DO NOT modify the UI, layout, styling, database migration system, AI provider fallback system, credits system, authentication, or unrelated features.
+
+The previous audit identified these exact Video Engine problems:
+
+1. "/api/video/plan" timed out.
+2. "/api/video/render" returned HTTP 500:
+   "Cannot read properties of undefined (reading 'substring')"
+3. Video generation returned a Pollinations image URL instead of an actual video file.
+4. FFmpeg is installed, but the video stitching/render pipeline timed out.
+5. Export failed to produce a valid MP4.
+6. A generated/exported MP4 failed validation with:
+   "moov atom not found"
+7. A render request could create a project record but did not produce a real output video artifact.
+
+TASK:
+
+A. Audit the complete existing video pipeline first:
+Prompt → Video Plan → Scenes → Media Generation/Selection → Voice/Audio → FFmpeg Composition → Render → MP4 Validation → Storage/Output URL.
+
+B. Find the exact causes of the above failures.
+
+C. Fix ONLY the Video Engine Pipeline.
+
+D. "/api/video/plan" must:
+
+- return reliably without hanging/timeouts;
+- validate the request;
+- produce a valid video plan;
+- handle provider failures/timeouts safely;
+- never leave the request hanging indefinitely.
+
+E. "/api/video/render" must:
+
+- validate the project/render payload before processing;
+- never call ".substring()" or similar methods on undefined/null values;
+- return a clear HTTP error for invalid input instead of crashing;
+- successfully start the render pipeline for valid input.
+
+F. Video generation must create an ACTUAL VIDEO FILE.
+Do NOT treat an image URL as a video.
+Do NOT return a Pollinations image URL as a successful video result.
+
+G. FFmpeg pipeline:
+
+- use the existing FFmpeg installation;
+- inspect the existing implementation before changing it;
+- correctly combine the generated/selected scene media and audio;
+- enforce reasonable per-step timeouts;
+- clean up temporary files;
+- produce a valid playable MP4;
+- validate the resulting MP4 before reporting success.
+
+H. Export:
+
+- a successful render must produce a real output artifact;
+- verify the output file exists;
+- verify it has a valid video container/metadata;
+- return the correct output URL/path;
+- never report success when the MP4 is invalid or missing.
+
+I. Preserve the existing video architecture as much as possible.
+Do not replace the entire video engine with a new architecture unless absolutely necessary.
+
+J. Do NOT add paid providers or change the provider fallback chain in this task.
+If an external AI provider is unavailable, make the video pipeline handle that failure correctly and report it clearly.
+
+K. Do NOT change credit charging rules in this task.
+If a generation fails, do not silently alter the existing credit logic.
+
+VERIFICATION:
+
+After implementation run:
+
+1. "npm run lint"
+2. "npm run build"
+3. "npm run dev"
+4. Verify "GET /api/health"
+5. Test "/api/video/plan" with a valid minimal request.
+6. Test "/api/video/plan" with invalid input and confirm it fails cleanly.
+7. Test "/api/video/render" with invalid/missing render data and confirm it returns a controlled error rather than crashing.
+8. Run one safe end-to-end video render using the existing available/fallback media only.
+9. Confirm:
+   - an actual MP4 file is created;
+   - the file is non-empty;
+   - FFmpeg can inspect it successfully;
+   - the MP4 contains a valid video stream;
+   - the output artifact can be accessed;
+   - the API reports success only after validation.
+
+IMPORTANT:
+
+- Do NOT modify UI/source unrelated to Video Engine.
+- Do NOT modify database migration code.
+- Do NOT modify provider fallback logic.
+- Do NOT modify credits/pricing.
+- Do NOT modify authentication.
+- Do NOT create a new GitHub repository.
+- Do NOT redesign the application.
+- Do NOT hide or suppress errors.
+- Do NOT claim PASS based only on static code inspection.
+- If an external provider prevents a real end-to-end test, report the exact blocked step instead of pretending it passed.
+
+At the end provide:
+
+Files Changed:
+
+- exact file names
+
+Root Causes Found:
+
+- exact causes of each Video Engine failure
+
+Fixes Applied:
+
+- concise bullets
+
+Verification:
+
+- lint: PASS/FAIL
+- build: PASS/FAIL
+- server startup: PASS/FAIL
+- /api/health: PASS/FAIL
+- /api/video/plan valid request: PASS/FAIL
+- /api/video/plan invalid request: PASS/FAIL
+- /api/video/render invalid request: PASS/FAIL
+- End-to-end video render: PASS/FAIL/BLOCKED
+- Actual MP4 created: YES/NO
+- MP4 validation: PASS/FAIL
+- Export artifact: PASS/FAIL
+
+Remaining Errors:
+
+- exact errors only
+
+Do not perform any additional improvements outside this task.

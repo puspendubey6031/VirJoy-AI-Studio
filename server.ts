@@ -1,11 +1,14 @@
 import express from 'express';
 import cors from 'cors';
+import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { configStore, userStatsStore, videoProjectsStore, designProjectsStore } from './src/server/configStore.js';
 import { extractProductFromUrl } from './src/server/productExtractor.js';
 import { generateIdeaWorkflow, planVideoWithAI } from './src/server/videoEngine.js';
+import { videoComposer } from './src/server/engine/videoComposer.js';
+import type { GranularSceneSpec, TimelinePackage } from './src/server/engine/types.js';
 import { cleanupStats, purgeExpiredVideos, startCleanupWorker } from './src/server/cleanupService.js';
 import { checkBackendSupabaseConnection, supabaseServer } from './src/server/supabaseServer.js';
 import {
@@ -1308,6 +1311,10 @@ async function startServer() {
     try {
       const { prompt, targetDurationSeconds = 15, aspectRatio = '16:9', inputs = {}, planKey = 'Free' } = req.body;
 
+      if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+        return res.status(400).json({ error: 'MISSING_PROMPT', message: 'prompt is required and must be a non-empty string' });
+      }
+
       const lockCheck = checkFeatureLockServer('videoGenerator', planKey || userStatsStore.currentPlan);
       if (!lockCheck.allowed) {
         return res.status(lockCheck.status || 403).json(lockCheck);
@@ -1328,17 +1335,21 @@ async function startServer() {
         });
       }
 
-      const scenes = await planVideoWithAI({
-        prompt: prompt || 'Product commercial ad',
-        targetDurationSeconds: requestedSec,
-        aspectRatio,
-        inputs,
-        planKey: planKey as PlanKey
-      }, apiKey);
+      // 55-second overall timeout so the request never hangs indefinitely
+      const PLAN_TIMEOUT_MS = 55000;
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('VIDEO_PLAN_TIMEOUT: Scene planning exceeded 55 seconds. Provider may be unavailable.')), PLAN_TIMEOUT_MS)
+      );
+
+      const scenes = await Promise.race([
+        planVideoWithAI({ prompt: prompt.trim(), targetDurationSeconds: requestedSec, aspectRatio, inputs, planKey: planKey as PlanKey }, apiKey),
+        timeoutPromise
+      ]);
 
       res.json({ success: true, scenes });
     } catch (err: any) {
-      res.status(500).json({ error: err?.message || 'Video planning failed' });
+      const status = (err?.message || '').includes('TIMEOUT') ? 504 : 500;
+      res.status(status).json({ error: err?.message || 'Video planning failed' });
     }
   });
 
@@ -1373,6 +1384,14 @@ async function startServer() {
         scenes = [],
         planKey = userStatsStore.currentPlan
       } = req.body;
+
+      // Validate required fields before any property access
+      if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+        return res.status(400).json({ error: 'MISSING_PROMPT', message: 'prompt is required and must be a non-empty string' });
+      }
+      if (!Array.isArray(scenes) || scenes.length === 0) {
+        return res.status(400).json({ error: 'MISSING_SCENES', message: 'scenes array is required and must not be empty' });
+      }
 
       const lockCheck = checkFeatureLockServer('videoGenerator', planKey || userStatsStore.currentPlan);
       if (!lockCheck.allowed) {
@@ -1416,19 +1435,20 @@ async function startServer() {
       const expiresAtDate = new Date(createdAtDate.getTime() + retentionHours * 60 * 60 * 1000);
 
       const projectId = `vj-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      const safePrompt = (prompt as string).trim();
 
       const newProject: VideoProject = {
         id: projectId,
-        title: title || `VirJoy Video - ${prompt.substring(0, 25)}`,
-        prompt,
+        title: title || `VirJoy Video - ${safePrompt.substring(0, 25)}`,
+        prompt: safePrompt,
         inputs,
         aspectRatio,
         totalDurationSeconds,
-        language: inputs.language || 'en-US',
-        voice: inputs.voice || 'female-ananya',
-        voiceTone: inputs.voiceTone || 'Energetic',
+        language: (inputs as any).language || 'en-US',
+        voice: (inputs as any).voice || 'female-ananya',
+        voiceTone: (inputs as any).voiceTone || 'Energetic',
         scenes,
-        status: 'completed',
+        status: 'rendering',
         planUsed: planKey,
         watermarked: currentPlanConfig.hasWatermark,
         exportQuality: currentPlanConfig.exportQuality,
@@ -1437,10 +1457,67 @@ async function startServer() {
         expiresAt: expiresAtDate.toISOString()
       };
 
-      // Store project
+      // Store project record (status: rendering)
       videoProjectsStore.set(projectId, newProject);
 
-      // Deduct credits and update monthly usage stats (1 second = 1 Credit)
+      // Build GranularSceneSpec[] from the incoming Scene[] for FFmpeg
+      const granularScenes: GranularSceneSpec[] = scenes.map((s: any, i: number) => ({
+        sceneId: s.id || `scene-${i + 1}-${Date.now()}`,
+        sceneNumber: i + 1,
+        durationSeconds: Math.max(2, s.duration || 4),
+        narrationText: s.narration || s.caption || safePrompt,
+        visualPrompt: s.visualPrompt || 'Cinematic visual',
+        cameraMotion: s.cameraMotion || 'static_cinematic',
+        transitionEffect: s.transitionEffect || 'cross_dissolve',
+        visualEffect: s.visualEffect || 'cinematic_color_grade',
+        subtitleStartTime: s.subtitleStartTime || 0,
+        subtitleEndTime: s.subtitleEndTime || Math.max(2, s.duration || 4),
+        musicMood: 'cinematic_synth',
+        assignedAssetUrl: s.imageUrl || undefined,
+      }));
+
+      const timelinePackage: TimelinePackage = {
+        id: `tl_${projectId}_${Date.now()}`,
+        title: newProject.title,
+        aspectRatio: aspectRatio as '16:9' | '9:16' | '1:1',
+        totalDurationSeconds,
+        scenes: granularScenes,
+        mediaAssets: [],
+        voiceAudioUrl: (scenes[0] as any)?.voiceAudioUrl || '',
+        backgroundMusicUrl: (scenes[0] as any)?.backgroundMusicUrl || '/audio/cinematic.mp3',
+        subtitles: { format: 'burned', sourceLanguage: (inputs as any).language || 'en-US', cues: [], rawFormattedContent: '' },
+        overlayConfig: { watermarkText: currentPlanConfig.hasWatermark ? 'Created with VirJoy AI' : undefined }
+      };
+
+      // Execute FFmpeg render and validate the output MP4
+      const exportDir = path.join(process.cwd(), 'public', 'exports');
+      if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
+      const fileName = `video_${projectId}_${Date.now()}.mp4`;
+      const exportPath = path.join(exportDir, fileName);
+
+      try {
+        await videoComposer.executeFFmpegRender(timelinePackage, exportPath);
+
+        const validation = await videoComposer.validateOutputMP4(exportPath);
+        if (!validation.valid) {
+          throw new Error('FFmpeg produced an invalid MP4 — no video stream detected by ffprobe');
+        }
+
+        newProject.status = 'completed';
+        newProject.outputUrl = `/exports/${fileName}`;
+        videoProjectsStore.set(projectId, newProject);
+      } catch (renderErr: any) {
+        console.error('[VideoRender] FFmpeg render failed:', renderErr?.message);
+        newProject.status = 'failed';
+        videoProjectsStore.set(projectId, newProject);
+        return res.status(500).json({
+          error: 'VIDEO_RENDER_FAILED',
+          message: `Video rendering failed: ${renderErr?.message || 'FFmpeg error'}`,
+          projectId
+        });
+      }
+
+      // Deduct credits only after successful render
       userStatsStore.usedCredits += requiredCredits;
       userStatsStore.usedMonthlyDurationSeconds += totalDurationSeconds;
       userStatsStore.history.unshift({

@@ -34,6 +34,7 @@ export interface ExecutePipelineOptions {
   planKey?: any;
   resumeFromCheckpoint?: EngineCheckpoint;
   apiKey?: string;
+  skipFFmpegRender?: boolean;
 }
 
 export class MasterWorkflowEngine {
@@ -59,7 +60,8 @@ export class MasterWorkflowEngine {
       userUploads,
       planKey = 'Free',
       resumeFromCheckpoint,
-      apiKey
+      apiKey,
+      skipFFmpegRender = false
     } = options;
 
     // Initialize or load existing checkpoint for stage recovery
@@ -202,26 +204,31 @@ export class MasterWorkflowEngine {
 
       // STAGE 8: VIDEO COMPOSITION & RENDER INSTRUCTION PACKAGE
       if (!checkpoint.completedStages.includes('video_composition')) {
-        updateStage('video_composition', 'Video Composition & Worker Package', 95, 'in_progress', 'Downloading scene assets & rendering MP4 video with FFmpeg...');
+        updateStage('video_composition', 'Video Composition & Worker Package', 95, 'in_progress', 'Compiling render package...');
         const renderPackage = videoComposer.compileRenderPackage(timelinePackage, 'ffmpeg');
         checkpoint.renderPackage = renderPackage;
 
-        // Perform real FFmpeg rendering
-        const exportDir = path.join(process.cwd(), 'public', 'exports');
-        if (!fs.existsSync(exportDir)) {
-          fs.mkdirSync(exportDir, { recursive: true });
-        }
-        const fileName = `video_${jobId}_${Date.now()}.mp4`;
-        const exportPath = path.join(exportDir, fileName);
+        if (skipFFmpegRender) {
+          // Planning path: skip actual FFmpeg execution; render happens in /api/video/render
+          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', 'Render package compiled (FFmpeg deferred to render step).');
+        } else {
+          // Full render path: actually execute FFmpeg
+          const exportDir = path.join(process.cwd(), 'public', 'exports');
+          if (!fs.existsSync(exportDir)) {
+            fs.mkdirSync(exportDir, { recursive: true });
+          }
+          const fileName = `video_${jobId}_${Date.now()}.mp4`;
+          const exportPath = path.join(exportDir, fileName);
 
-        try {
-          const renderResult = await videoComposer.executeFFmpegRender(timelinePackage, exportPath);
-          checkpoint.renderedVideoUrl = `/exports/${fileName}`;
-          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', `Render completed. Video exported to /exports/${fileName}`);
-        } catch (renderErr: any) {
-          console.warn('[WorkflowEngine] FFmpeg render error, creating fallback:', renderErr?.message || renderErr);
-          checkpoint.renderedVideoUrl = `/exports/${fileName}`;
-          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', 'Render package ready for Processing Engine.');
+          try {
+            await videoComposer.executeFFmpegRender(timelinePackage, exportPath);
+            checkpoint.renderedVideoUrl = `/exports/${fileName}`;
+            updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', `Render completed. Video exported to /exports/${fileName}`);
+          } catch (renderErr: any) {
+            console.error('[WorkflowEngine] FFmpeg render failed:', renderErr?.message || renderErr);
+            updateStage('video_composition', 'Video Composition & Worker Package', 98, 'failed', undefined, renderErr?.message);
+            throw renderErr;
+          }
         }
       }
 

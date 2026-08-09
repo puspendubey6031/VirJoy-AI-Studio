@@ -35,7 +35,8 @@ export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string
     language: inputs.language,
     userUploads: inputs.images,
     planKey,
-    apiKey: apiKey || process.env.GEMINI_API_KEY
+    apiKey: apiKey || process.env.GEMINI_API_KEY,
+    skipFFmpegRender: true   // planning does not need a rendered file
   });
 
   if (checkpoint.scenes && checkpoint.scenes.length > 0) {
