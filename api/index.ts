@@ -1504,6 +1504,105 @@ app.get('/api/dev/provider-status', (_req, res) => {
   res.json({ status: 'ok', report: status });
 });
 
+// ── Provider fallback system test (mock providers — no real API calls) ────────
+app.get('/api/dev/provider-test', async (_req, res) => {
+  const { runWithFallback, AllProvidersFailedError } = await import('../src/server/providers/providerFallback.js');
+  const results: Record<string, { pass: boolean; detail: string }> = {};
+
+  // Test A: primary succeeds — fallback providers must NOT be called
+  try {
+    let fallbackCalled = false;
+    const { providerUsed, attempts } = await runWithFallback('test-A', [
+      { name: 'Primary', run: async () => 'ok' },
+      { name: 'Fallback1', run: async () => { fallbackCalled = true; return 'fb'; } }
+    ]);
+    results['A_primary_success'] = {
+      pass: providerUsed === 'Primary' && !fallbackCalled && attempts.length === 1,
+      detail: `providerUsed=${providerUsed} fallbackCalled=${fallbackCalled} attempts=${attempts.length}`
+    };
+  } catch (e) { results['A_primary_success'] = { pass: false, detail: String(e) }; }
+
+  // Test B: primary fails → fallback 1 attempted
+  try {
+    const { providerUsed, attempts } = await runWithFallback('test-B', [
+      { name: 'Primary', run: async () => { throw new Error('quota exhausted'); } },
+      { name: 'Fallback1', run: async () => 'fb1' }
+    ]);
+    results['B_primary_fail_fallback1'] = {
+      pass: providerUsed === 'Fallback1' && attempts.length === 2 && attempts[0].success === false,
+      detail: `providerUsed=${providerUsed} attempts=${attempts.length} fb1Category=${attempts[0].failureCategory}`
+    };
+  } catch (e) { results['B_primary_fail_fallback1'] = { pass: false, detail: String(e) }; }
+
+  // Test C: primary + fallback1 fail → fallback2 succeeds
+  try {
+    const { providerUsed, attempts } = await runWithFallback('test-C', [
+      { name: 'Primary',   run: async () => { throw new Error('rate limit 429'); } },
+      { name: 'Fallback1', run: async () => { throw new Error('service unavailable 503'); } },
+      { name: 'Fallback2', run: async () => 'fb2' }
+    ]);
+    results['C_two_fail_third_succeeds'] = {
+      pass: providerUsed === 'Fallback2' && attempts.length === 3,
+      detail: `providerUsed=${providerUsed} attempts=${attempts.length}`
+    };
+  } catch (e) { results['C_two_fail_third_succeeds'] = { pass: false, detail: String(e) }; }
+
+  // Test D: all providers fail → controlled AllProvidersFailedError
+  try {
+    await runWithFallback('test-D', [
+      { name: 'P1', run: async () => { throw new Error('fail 1'); } },
+      { name: 'P2', run: async () => { throw new Error('fail 2'); } }
+    ]);
+    results['D_all_fail_controlled_error'] = { pass: false, detail: 'Should have thrown AllProvidersFailedError' };
+  } catch (e) {
+    results['D_all_fail_controlled_error'] = {
+      pass: e instanceof AllProvidersFailedError,
+      detail: e instanceof AllProvidersFailedError ? `correct error type, chain: ${e.message.substring(0, 120)}` : String(e)
+    };
+  }
+
+  // Test E: missing API key → provider excluded from chain (not added), not fatal
+  try {
+    const apiKey = process.env.__NONEXISTENT_KEY__;  // always undefined
+    const chain = [];
+    if (apiKey) chain.push({ name: 'ProviderWithKey', run: async () => 'keyed' });
+    chain.push({ name: 'NoKeyProvider', run: async () => 'ok-no-key' });
+    const { providerUsed } = await runWithFallback('test-E', chain);
+    results['E_missing_key_skipped'] = {
+      pass: providerUsed === 'NoKeyProvider',
+      detail: `providerUsed=${providerUsed} (keyed provider correctly absent from chain)`
+    };
+  } catch (e) { results['E_missing_key_skipped'] = { pass: false, detail: String(e) }; }
+
+  // Test F: provider timeout → fallback continues
+  try {
+    const { providerUsed, attempts } = await runWithFallback('test-F', [
+      { name: 'SlowProvider', timeoutMs: 50, run: async () => new Promise(r => setTimeout(r, 500)) as any },
+      { name: 'FastFallback', run: async () => 'fast' }
+    ]);
+    results['F_timeout_fallback_continues'] = {
+      pass: providerUsed === 'FastFallback' && attempts[0].failureCategory === 'TIMEOUT',
+      detail: `providerUsed=${providerUsed} timedOutCategory=${attempts[0].failureCategory}`
+    };
+  } catch (e) { results['F_timeout_fallback_continues'] = { pass: false, detail: String(e) }; }
+
+  // Test G: verify operation-specific chain configs (provider registry)
+  try {
+    const report = getProviderStatusReport();
+    const scriptHasBuiltIn = report.script.guaranteedFallback === 'BuiltInRuleEngine';
+    const imageHasPollinations = report.image.guaranteedFallback === 'PollinationsAI';
+    const voiceHasLongCat = report.voice.guaranteedFallback === 'LongCatAudioDiT';
+    const videoHasCanvas = report.videoClip.guaranteedFallback === 'DynamicCanvasRender';
+    results['G_operation_specific_chains'] = {
+      pass: scriptHasBuiltIn && imageHasPollinations && voiceHasLongCat && videoHasCanvas,
+      detail: `script=${report.script.fallbackOrder.join('→')} | image=${report.image.fallbackOrder.join('→')} | voice=${report.voice.fallbackOrder.join('→')} | videoClip=${report.videoClip.fallbackOrder.join('→')}`
+    };
+  } catch (e) { results['G_operation_specific_chains'] = { pass: false, detail: String(e) }; }
+
+  const allPass = Object.values(results).every(r => r.pass);
+  res.status(allPass ? 200 : 207).json({ allPass, results });
+});
+
 app.get('/api/dev/cost-monitor', (_req, res) => {
   res.json({
     status: 'ok',

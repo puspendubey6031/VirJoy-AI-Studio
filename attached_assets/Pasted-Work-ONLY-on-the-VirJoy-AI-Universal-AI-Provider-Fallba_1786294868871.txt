@@ -1,0 +1,247 @@
+Work ONLY on the VirJoy AI Universal AI Provider Fallback System.
+
+Do NOT modify:
+
+- UI/layout/styling
+- Video Engine / FFmpeg pipeline
+- Database migration
+- Credits/pricing
+- Authentication
+- Lip-sync/talking-character system
+- Unrelated business logic
+
+The goal is to create ONE reliable provider fallback architecture that can be reused by every AI generation operation.
+
+CURRENT REQUIREMENT:
+
+If the primary provider fails because of:
+
+- quota exhausted
+- rate limit
+- API error
+- timeout
+- unavailable service
+- invalid/expired API key
+- model unavailable
+
+then automatically try the next configured provider.
+
+The system must continue through the configured fallback chain until:
+
+- one provider succeeds, OR
+- every configured provider fails.
+
+Do NOT stop after the first provider failure.
+
+OPERATIONS THAT MUST USE THE FALLBACK SYSTEM:
+
+1. AI script generation
+2. Video planning / AI scene planning
+3. Image generation
+4. Logo generation
+5. Thumbnail generation
+6. Voice generation
+7. Any other existing AI-generation operation already present in the project
+
+IMPORTANT:
+Do not force every provider to support every operation.
+Only use a provider for an operation if that provider actually supports that operation.
+
+PROVIDER ARCHITECTURE:
+
+Create/use a centralized provider manager/registry rather than duplicating fallback logic in every endpoint.
+
+The architecture should conceptually support:
+
+Primary Provider
+→ Fallback Provider 1
+→ Fallback Provider 2
+→ Fallback Provider 3
+→ Built-in/local fallback where appropriate
+
+Keep Gemini as the primary provider where the current project already uses Gemini.
+
+Keep all currently configured providers that are actually implemented.
+
+The previous audit identified this existing chain:
+
+Gemini → Cohere → Mistral → BuiltInRuleEngine
+
+Preserve working providers, but make the fallback mechanism reliable and reusable.
+
+OPENROUTER:
+
+Add OpenRouter as a supported fallback provider ONLY if it fits the existing architecture and the required API key can be supplied through environment variables.
+
+Use environment variables only.
+
+Never hard-code:
+
+- API keys
+- secrets
+- tokens
+
+If OPENROUTER_API_KEY is missing, simply skip OpenRouter and continue to the next configured provider.
+
+CONFIGURATION:
+
+Use environment variables such as:
+
+GEMINI_API_KEY
+COHERE_API_KEY
+MISTRAL_API_KEY
+OPENROUTER_API_KEY
+
+Use the project's existing environment-variable naming conventions if they differ.
+
+Provider selection must depend on which credentials are actually configured.
+
+ERROR HANDLING:
+
+For every provider attempt record internally:
+
+- provider name
+- operation
+- start/end time or elapsed time
+- success/failure
+- failure category
+- whether fallback continued
+
+Never log API keys or secret values.
+
+Do not expose internal provider credentials to the browser.
+
+TIMEOUTS:
+
+Every external provider request must have a reasonable timeout.
+
+A failed/timeout provider must not hang the entire request indefinitely.
+
+FALLBACK RULE:
+
+Example:
+
+Gemini:
+FAIL — quota exhausted
+
+↓ automatically
+
+Cohere:
+FAIL — timeout
+
+↓
+
+Mistral:
+SUCCESS
+
+Then return the Mistral result normally.
+
+The user should NOT have to manually select the fallback provider.
+
+IMAGE/VIDEO/VOICE:
+
+For image generation, voice generation, thumbnails, logos, and other media operations, use only providers that actually support that operation.
+
+If no configured provider supports the requested operation, return a clear controlled error.
+
+Do NOT return fake success.
+
+Do NOT return an image URL as a video.
+
+Do NOT alter the already-fixed FFmpeg/video rendering pipeline.
+
+CREDITS:
+
+Do not change the existing credit rules.
+
+A provider failure/fallback attempt must NOT deduct credits multiple times.
+
+Credits should be handled by the existing generation workflow, not separately by every provider attempt.
+
+TESTING:
+
+After implementation run:
+
+1. npm run lint
+2. npm run build
+3. npm run dev
+4. /api/health
+
+Then test the fallback system safely WITHOUT intentionally consuming unnecessary paid/quota resources.
+
+Create a provider-status/diagnostic test using mocked or controlled provider failures where possible.
+
+Verify scenarios such as:
+
+Test A:
+Primary succeeds
+→ fallback providers are not called unnecessarily.
+
+Test B:
+Primary fails
+→ fallback 1 is attempted automatically.
+
+Test C:
+Primary + fallback 1 fail
+→ fallback 2 is attempted.
+
+Test D:
+All configured providers fail
+→ controlled final error is returned.
+
+Test E:
+Provider API key missing
+→ provider is skipped, not treated as a fatal application error.
+
+Test F:
+Provider timeout
+→ fallback continues.
+
+Test G:
+Image/logo/thumbnail/voice/script operations use the appropriate provider chain.
+
+IMPORTANT:
+
+Do NOT claim fallback works merely because the provider classes exist.
+
+Verify the actual control flow.
+
+At the end report:
+
+Files Changed:
+
+- exact file names
+
+Provider Registry:
+
+- all supported providers
+
+Operation Support:
+
+- Script:
+- Video planning:
+- Image:
+- Logo:
+- Thumbnail:
+- Voice:
+
+Fallback Order:
+
+- exact order for each operation
+
+Verification:
+
+- lint: PASS/FAIL
+- build: PASS/FAIL
+- server startup: PASS/FAIL
+- primary success test: PASS/FAIL
+- primary failure → fallback test: PASS/FAIL
+- timeout → fallback test: PASS/FAIL
+- missing API key handling: PASS/FAIL
+- all providers failed handling: PASS/FAIL
+
+Remaining Blockers:
+
+- exact blockers only
+
+Do NOT make any additional changes outside the Universal Provider Fallback System.
