@@ -274,10 +274,14 @@ export async function runFullDatabaseMigration(): Promise<MigrationResult> {
 
       // D. Migrate Table: settings
       const currentFullConfig = configStore.get();
-      await supabaseServer.from('settings').upsert({
-        id: 'app_config',
-        created_at: timestamp
-      }).catch(() => {});
+      try {
+        await supabaseServer.from('settings').upsert({
+          id: 'app_config',
+          created_at: timestamp
+        });
+      } catch {
+        // settings upsert is non-critical; ignore errors
+      }
 
       updatedTables.push({
         name: 'settings',
@@ -325,6 +329,7 @@ export async function runFullDatabaseMigration(): Promise<MigrationResult> {
   const updatedConfig = configStore.update({
     plans: officialPlans,
     subscriptionLockConfig: {
+      lockModal: defaultConfig.subscriptionLockConfig!.lockModal,
       credits: {
         creditsPerVideo: 5,
         creditsPer10Seconds: 2,

@@ -5,7 +5,7 @@ import { configStore, userStatsStore, videoProjectsStore, designProjectsStore } 
 import { extractProductFromUrl } from '../src/server/productExtractor.js';
 import { generateIdeaWorkflow, planVideoWithAI } from '../src/server/videoEngine.js';
 import { cleanupStats, purgeExpiredVideos } from '../src/server/cleanupService.js';
-import { checkBackendSupabaseConnection, supabaseServer } from '../src/server/supabaseServer.js';
+import { checkBackendSupabaseConnection, supabaseServer, isServerSupabaseConfigured } from '../src/server/supabaseServer.js';
 import {
   getProviderStatusReport,
   generateImageWithFallback,
@@ -970,12 +970,16 @@ app.post('/api/admin/migrate-database', handleMigration);
 app.post('/api/db/migrate', handleMigration);
 app.get('/api/admin/migrate-database/status', handleMigration);
 
-// Run initial migration asynchronously on server boot
-runFullDatabaseMigration().then(res => {
-  console.log('[SERVER BOOT] Full Database Migration & Seed Completed:', res.success);
-}).catch(err => {
-  console.warn('[SERVER BOOT] Initial database migration note:', err?.message);
-});
+// Run migration on boot only when Supabase is configured; skip silently otherwise.
+if (isServerSupabaseConfigured) {
+  runFullDatabaseMigration().then(res => {
+    console.log('[SERVER BOOT] Database migration completed:', res.success);
+  }).catch(err => {
+    console.warn('[SERVER BOOT] Database migration error:', err?.message);
+  });
+} else {
+  console.warn('[SERVER BOOT] Supabase not configured — skipping automatic migration. Use POST /api/admin/migrate-database to run it manually once credentials are set.');
+}
 
 // Get dynamic configuration
 app.get('/api/config', (_req, res) => {
