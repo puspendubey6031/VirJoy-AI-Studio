@@ -1,0 +1,1 @@
+- [Vite 6 + Replit blank-page fix](vite6-replit-fix.md) — three causes: allowedHosts blocks proxy, port/webview mismatch, Tailwind v4 @source needed in middleware mode.

@@ -43,7 +43,7 @@ process.on('unhandledRejection', (reason) => {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 5000;
 
   // Load latest configuration from Supabase if available
   await configStore.loadFromSupabase().catch(e => console.warn('Supabase config init note:', e?.message));
@@ -1666,7 +1666,7 @@ async function startServer() {
   // --- VITE / SERVING FRONTEND ---
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, allowedHosts: true },
       appType: 'spa'
     });
     app.use(vite.middlewares);
