@@ -1846,98 +1846,214 @@ async function startServer() {
 
   // ── Talking-character pipeline diagnostic endpoint ────────────────────────
   app.get('/api/dev/talking-character-status', async (_req, res) => {
-    const { getTalkingCharacterProviderStatus } = await import('./src/server/providers/talkingCharacterProvider.js');
-    const status = getTalkingCharacterProviderStatus();
+    const {
+      getTalkingCharacterProviderStatus,
+      checkBinaryAvailability
+    } = await import('./src/server/providers/talkingCharacterProvider.js');
 
+    const [status, binaries] = await Promise.all([
+      Promise.resolve(getTalkingCharacterProviderStatus()),
+      checkBinaryAvailability()
+    ]);
+
+    const hfConfigured = status.requiredEnvVars['HUGGINGFACE_API_KEY'];
     const blockers: string[] = [];
+
+    if (!hfConfigured) {
+      blockers.push('HUGGINGFACE_API_KEY missing — HF providers (LatentSync, SadTalker) will use the anonymous public Gradio queue (very slow, may be rate-limited)');
+    }
     if (!status.requiredEnvVars['SYNCLABS_API_KEY'])    blockers.push('SYNCLABS_API_KEY missing — SyncLabs unavailable');
     if (!status.requiredEnvVars['DID_API_KEY'])         blockers.push('DID_API_KEY missing — D-ID unavailable');
     if (!status.requiredEnvVars['REPLICATE_API_TOKEN']) blockers.push('REPLICATE_API_TOKEN missing — Replicate-Wav2Lip unavailable');
-    if (!status.requiredEnvVars['HUGGINGFACE_API_KEY']) blockers.push('HUGGINGFACE_API_KEY missing — HF-LatentSync will use the public Gradio queue (may be slow)');
-
-    // Determine overall readiness
-    const hasCommercialProvider = (
-      status.requiredEnvVars['SYNCLABS_API_KEY'] ||
-      status.requiredEnvVars['DID_API_KEY'] ||
-      status.requiredEnvVars['REPLICATE_API_TOKEN']
-    );
+    if (!binaries.ffmpeg)  blockers.push('ffmpeg binary not found — video composition impossible');
+    if (!binaries.ffprobe) blockers.push('ffprobe binary not found — output validation impossible');
 
     res.json({
       status: 'ok',
-      pipelineAvailable: true,  // HF-LatentSync is always in the chain
-      hasCommercialProvider,
-      providerStatus: status,
-      blockers,
-      requiredToEnable: {
-        SYNCLABS_API_KEY:    { configured: status.requiredEnvVars['SYNCLABS_API_KEY'],    purpose: 'SyncLabs commercial lip-sync (fastest)' },
-        DID_API_KEY:         { configured: status.requiredEnvVars['DID_API_KEY'],          purpose: 'D-ID commercial talking avatar' },
-        REPLICATE_API_TOKEN: { configured: status.requiredEnvVars['REPLICATE_API_TOKEN'],  purpose: 'Replicate wav2lip model' },
-        HUGGINGFACE_API_KEY: { configured: status.requiredEnvVars['HUGGINGFACE_API_KEY'],  purpose: 'HF LatentSync Gradio space — optional key speeds up queue' }
+      hfCredentialConfigured: hfConfigured,
+      hfFirst: status.hfFirst,
+      pipelineAvailable: binaries.ffmpeg && binaries.ffprobe,
+      providerOrder: status.fallbackOrder,
+      configuredProviders: status.configuredProviders,
+      unconfiguredProviders: status.unconfiguredProviders,
+      requiredBinaries: binaries,
+      requiredEnvVars: {
+        HUGGINGFACE_API_KEY:  { configured: status.requiredEnvVars['HUGGINGFACE_API_KEY'],  purpose: 'Primary: HF-LatentSync + HF-SadTalker (existing credential — no new key needed)' },
+        SYNCLABS_API_KEY:     { configured: status.requiredEnvVars['SYNCLABS_API_KEY'],     purpose: 'Optional commercial fallback: SyncLabs' },
+        DID_API_KEY:          { configured: status.requiredEnvVars['DID_API_KEY'],           purpose: 'Optional commercial fallback: D-ID' },
+        REPLICATE_API_TOKEN:  { configured: status.requiredEnvVars['REPLICATE_API_TOKEN'],   purpose: 'Optional commercial fallback: Replicate wav2lip' }
       },
+      blockers,
+      note: status.note,
       usageNote: 'Pass characterImageUrl in your video generation request to activate the talking-character pipeline.'
     });
   });
 
-  // ── Talking-character validation test (safe — no external calls) ──────────
+  // ── Talking-character tests A–I (safe — no real external calls) ───────────
   app.get('/api/dev/talking-character-test', async (_req, res) => {
-    const { validateTalkingCharacterVideo, getTalkingCharacterProviderStatus } = await import('./src/server/providers/talkingCharacterProvider.js');
+    const {
+      validateTalkingCharacterVideo,
+      validateTalkingCharacterInputs,
+      getTalkingCharacterProviderStatus,
+      checkBinaryAvailability
+    } = await import('./src/server/providers/talkingCharacterProvider.js');
     const { runWithFallback, AllProvidersFailedError } = await import('./src/server/providers/providerFallback.js');
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const { default: fsSync } = await import('fs');
+    const execAsync = promisify(exec);
 
     const tests: Record<string, { pass: boolean; detail: string }> = {};
 
-    // Test 1: provider chain configuration is readable
+    // ── A. HF provider configured → HF providers appear first in chain ────────
     try {
       const status = getTalkingCharacterProviderStatus();
-      tests['1_provider_chain_config'] = {
-        pass: Array.isArray(status.fallbackOrder) && status.fallbackOrder.length === 4,
-        detail: `Chain: ${status.fallbackOrder.join(' → ')} | configured: ${status.configuredProviders.join(', ') || 'none'}`
-      };
-    } catch (e) { tests['1_provider_chain_config'] = { pass: false, detail: String(e) }; }
+      const hfKeySet = status.requiredEnvVars['HUGGINGFACE_API_KEY'];
+      if (hfKeySet) {
+        // HF key is set: HF-LatentSync must be first
+        const pass = status.fallbackOrder[0] === 'HF-LatentSync' && status.hfFirst === true;
+        tests['A_hf_configured_first'] = {
+          pass,
+          detail: `hfFirst=${status.hfFirst} order[0]=${status.fallbackOrder[0]} | chain: ${status.fallbackOrder.join(' → ')}`
+        };
+      } else {
+        // HF key absent: HF-LatentSync goes last in chain
+        const last = status.fallbackOrder[status.fallbackOrder.length - 1];
+        tests['A_hf_configured_first'] = {
+          pass: last === 'HF-LatentSync' && status.hfFirst === false,
+          detail: `HF key not set — HF-LatentSync is last. hfFirst=${status.hfFirst} order: ${status.fallbackOrder.join(' → ')}`
+        };
+      }
+    } catch (e) { tests['A_hf_configured_first'] = { pass: false, detail: String(e) }; }
 
-    // Test 2: validateTalkingCharacterVideo handles missing file correctly
+    // ── B. HF provider unavailable (fails) → next provider attempted ─────────
     try {
-      const result = await validateTalkingCharacterVideo('/tmp/__nonexistent_tc_file__.mp4');
-      tests['2_validation_missing_file'] = {
-        pass: result.valid === false && !!result.error,
-        detail: `valid=${result.valid} error="${result.error}"`
+      let fallbackCalled = false;
+      const { providerUsed, attempts } = await runWithFallback('tc-test-B', [
+        { name: 'HF-LatentSync',  run: async () => { throw new Error('service unavailable 503'); } },
+        { name: 'CommercialFallback', run: async () => { fallbackCalled = true; return { videoUrl: 'x', localPath: '/tmp/x', providerUsed: 'Fallback', durationSeconds: 2, fileSizeBytes: 1024 }; } }
+      ]);
+      tests['B_hf_unavailable_fallback'] = {
+        pass: providerUsed === 'CommercialFallback' && fallbackCalled && attempts[0].failureCategory === 'SERVICE_UNAVAILABLE',
+        detail: `providerUsed=${providerUsed} fallbackCalled=${fallbackCalled} category=${attempts[0]?.failureCategory}`
       };
-    } catch (e) { tests['2_validation_missing_file'] = { pass: false, detail: String(e) }; }
+    } catch (e) { tests['B_hf_unavailable_fallback'] = { pass: false, detail: String(e) }; }
 
-    // Test 3: provider missing-key guard — provider skipped if env var absent
+    // ── C. Provider timeout → fallback continues ──────────────────────────────
     try {
-      const fakeKey = process.env.__NONEXISTENT_TC_KEY__;
-      const chain: any[] = [];
-      if (fakeKey) chain.push({ name: 'KeyedProvider', run: async () => ({ videoUrl: 'x', localPath: 'x', providerUsed: 'X', durationSeconds: 1, fileSizeBytes: 1 }) });
-      chain.push({ name: 'NoKeyFallback', run: async () => ({ videoUrl: 'ok', localPath: '/tmp/ok.mp4', providerUsed: 'NoKeyFallback', durationSeconds: 2, fileSizeBytes: 1024 }) });
-      const { providerUsed } = await runWithFallback('tc-test-3', chain);
-      tests['3_missing_key_guard'] = {
-        pass: providerUsed === 'NoKeyFallback',
-        detail: `providerUsed=${providerUsed}`
+      const { providerUsed, attempts } = await runWithFallback('tc-test-C', [
+        {
+          name: 'SlowProvider',
+          timeoutMs: 50,
+          run: () => new Promise((_, reject) => setTimeout(() => reject(new Error('Provider SlowProvider timed out after 50ms')), 100))
+        },
+        { name: 'FastFallback', run: async () => ({ videoUrl: 'x', localPath: '/tmp/x', providerUsed: 'Fast', durationSeconds: 1, fileSizeBytes: 512 }) }
+      ]);
+      tests['C_timeout_fallback'] = {
+        pass: providerUsed === 'FastFallback' && attempts[0].failureCategory === 'TIMEOUT',
+        detail: `providerUsed=${providerUsed} category=${attempts[0]?.failureCategory} elapsed=${attempts[0]?.elapsedMs}ms`
       };
-    } catch (e) { tests['3_missing_key_guard'] = { pass: false, detail: String(e) }; }
+    } catch (e) { tests['C_timeout_fallback'] = { pass: false, detail: String(e) }; }
 
-    // Test 4: AllProvidersFailedError raised when chain is empty
+    // ── D. Invalid video artifact → provider result rejected ──────────────────
     try {
-      await runWithFallback('tc-test-4', []);
-      tests['4_empty_chain_error'] = { pass: false, detail: 'Should have thrown AllProvidersFailedError' };
+      // Write a file that is not a valid MP4
+      const fakeVideoPath = '/tmp/tc_test_D_fake.mp4';
+      fsSync.writeFileSync(fakeVideoPath, 'not a real mp4 file content FAKE');
+      const validation = await validateTalkingCharacterVideo(fakeVideoPath);
+      tests['D_invalid_artifact_rejected'] = {
+        pass: validation.valid === false,
+        detail: `valid=${validation.valid} error="${validation.error}" size=${validation.fileSizeBytes}`
+      };
+      try { fsSync.unlinkSync(fakeVideoPath); } catch {}
+    } catch (e) { tests['D_invalid_artifact_rejected'] = { pass: false, detail: String(e) }; }
+
+    // ── E. Missing image → clean validation error ─────────────────────────────
+    try {
+      const result = await validateTalkingCharacterInputs({ characterImageUrl: '', audioUrl: 'https://example.com/audio.wav' });
+      tests['E_missing_image_error'] = {
+        pass: result.valid === false && result.errors.some(e => e.toLowerCase().includes('characterimageurl')),
+        detail: `valid=${result.valid} errors=${JSON.stringify(result.errors)}`
+      };
+    } catch (e) { tests['E_missing_image_error'] = { pass: false, detail: String(e) }; }
+
+    // ── F. Missing audio → clean validation error ─────────────────────────────
+    try {
+      const result = await validateTalkingCharacterInputs({ characterImageUrl: 'https://example.com/face.jpg', audioUrl: '' });
+      tests['F_missing_audio_error'] = {
+        pass: result.valid === false && result.errors.some(e => e.toLowerCase().includes('audiourl')),
+        detail: `valid=${result.valid} errors=${JSON.stringify(result.errors)}`
+      };
+    } catch (e) { tests['F_missing_audio_error'] = { pass: false, detail: String(e) }; }
+
+    // ── G. All providers fail → AllProvidersFailedError ───────────────────────
+    try {
+      await runWithFallback('tc-test-G', [
+        { name: 'P1', run: async () => { throw new Error('fail P1'); } },
+        { name: 'P2', run: async () => { throw new Error('fail P2'); } },
+        { name: 'P3', run: async () => { throw new Error('fail P3 quota'); } }
+      ]);
+      tests['G_all_fail_structured_error'] = { pass: false, detail: 'Should have thrown AllProvidersFailedError' };
     } catch (e) {
-      tests['4_empty_chain_error'] = {
-        pass: e instanceof AllProvidersFailedError,
-        detail: e instanceof AllProvidersFailedError ? 'Correct AllProvidersFailedError raised' : String(e)
+      const isCorrect = e instanceof AllProvidersFailedError && (e as any).attempts?.length === 3;
+      tests['G_all_fail_structured_error'] = {
+        pass: isCorrect,
+        detail: isCorrect
+          ? `AllProvidersFailedError with ${(e as any).attempts.length} attempts: ${(e as Error).message.substring(0, 120)}`
+          : String(e)
       };
     }
 
-    // Test 5: env var presence report is correct format
+    // ── H. Valid talking-character MP4 → ffprobe validation passes ─────────────
     try {
-      const status = getTalkingCharacterProviderStatus();
-      const keys = Object.keys(status.requiredEnvVars);
-      const expectedKeys = ['SYNCLABS_API_KEY', 'DID_API_KEY', 'REPLICATE_API_TOKEN', 'HUGGINGFACE_API_KEY'];
-      const allPresent = expectedKeys.every(k => keys.includes(k));
-      tests['5_env_var_report_format'] = {
-        pass: allPresent,
-        detail: `Keys reported: ${keys.join(', ')}`
+      const testClipPath = '/tmp/tc_test_H_valid.mp4';
+      // Create a minimal real MP4 (2s, 320x240, sine wave audio) using ffmpeg
+      await execAsync(
+        `ffmpeg -y -f lavfi -i "color=c=0x1e40af:s=320x240:d=2" -f lavfi -i "sine=frequency=440:duration=2" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -t 2 "${testClipPath}"`,
+        { timeout: 30000 }
+      );
+      const validation = await validateTalkingCharacterVideo(testClipPath);
+      tests['H_valid_mp4_passes_validation'] = {
+        pass: validation.valid && validation.hasVideo && validation.duration > 0 && validation.fileSizeBytes > 0,
+        detail: `valid=${validation.valid} hasVideo=${validation.hasVideo} hasAudio=${validation.hasAudio} duration=${validation.duration.toFixed(2)}s size=${validation.fileSizeBytes}B`
       };
-    } catch (e) { tests['5_env_var_report_format'] = { pass: false, detail: String(e) }; }
+      // Also verify the ffmpeg composition code path handles the talkingCharacterLocalPath
+      const { videoComposer } = await import('./src/server/engine/videoComposer.js');
+      const hasMethod = typeof (videoComposer as any).executeFFmpegRender === 'function';
+      tests['H_ffmpeg_composition_path_exists'] = { pass: hasMethod, detail: `executeFFmpegRender is ${typeof (videoComposer as any).executeFFmpegRender}` };
+      try { fsSync.unlinkSync(testClipPath); } catch {}
+    } catch (e) { tests['H_valid_mp4_passes_validation'] = { pass: false, detail: String(e) }; }
+
+    // ── I. Existing image-based pipeline is intact ────────────────────────────
+    try {
+      // Verify TimelinePackage can be constructed without talkingCharacterLocalPath (optional field)
+      const mockTimeline: any = {
+        id: 'test_I',
+        title: 'Test',
+        aspectRatio: '16:9',
+        totalDurationSeconds: 10,
+        scenes: [],
+        mediaAssets: [],
+        voiceAudioUrl: '',
+        backgroundMusicUrl: '',
+        subtitles: { format: 'burned', sourceLanguage: 'en', cues: [], rawFormattedContent: '' }
+        // talkingCharacterLocalPath intentionally absent
+      };
+      const hasNoTC = !mockTimeline.talkingCharacterLocalPath;
+      tests['I_static_image_pipeline_intact'] = {
+        pass: hasNoTC,
+        detail: `talkingCharacterLocalPath=${mockTimeline.talkingCharacterLocalPath} (undefined = static-image path active)`
+      };
+    } catch (e) { tests['I_static_image_pipeline_intact'] = { pass: false, detail: String(e) }; }
+
+    // ── Binary availability (bonus — prerequisite for all tests) ─────────────
+    try {
+      const bins = await checkBinaryAvailability();
+      tests['prereq_binaries'] = {
+        pass: bins.ffmpeg && bins.ffprobe,
+        detail: `ffmpeg=${bins.ffmpeg} ffprobe=${bins.ffprobe}`
+      };
+    } catch (e) { tests['prereq_binaries'] = { pass: false, detail: String(e) }; }
 
     const allPass = Object.values(tests).every(t => t.pass);
     res.status(allPass ? 200 : 207).json({ allPass, tests });

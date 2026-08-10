@@ -1,0 +1,197 @@
+AUDIT AND IMPLEMENT ONLY THE NEXT TASK: HARDEN THE TALKING-CHARACTER / LIP-SYNC PIPELINE USING THE EXISTING HUGGING FACE CREDENTIAL.
+
+Do NOT redesign the UI.
+Do NOT modify unrelated features.
+Do NOT add Sync Labs, D-ID, fal.ai, or Replicate API keys in this task.
+Do NOT ask me for a new API key unless the existing Hugging Face implementation is technically incapable of performing the required operation.
+
+GOAL:
+Make the Talking Character pipeline work with this sequence:
+
+Character Image
+→ Voice/Audio
+→ Talking Character / Lip-Sync Model
+→ Valid MP4 Talking-Character Clip
+→ FFmpeg composition
+→ Final MP4 export
+
+REQUIREMENTS:
+
+1. EXISTING HUGGING FACE SECRET
+   Use the existing environment variable already used by the project for Hugging Face authentication.
+   First inspect the codebase and identify the exact variable name.
+   Do NOT create a duplicate Hugging Face variable.
+   Do NOT expose the token in source code, logs, frontend code, or API responses.
+
+2. HF-FIRST PROVIDER
+   Use the existing Hugging Face infrastructure for the talking-character operation wherever a compatible model/API/Space is actually available.
+
+The implementation must NOT assume that merely having a model name means that the model is callable.
+Verify the actual inference endpoint/model interface before using it.
+
+3. TALKING-CHARACTER INPUT
+   Support:
+
+- characterImageUrl
+- generated/provided voice audio
+- valid public HTTPS image/audio URLs or locally available server files where the existing architecture supports them.
+
+Validate:
+
+- image exists and is readable
+- audio exists and is readable
+- audio has a valid audio stream
+- image format is supported
+- input URLs are not empty
+
+4. LIP-SYNC / TALKING ANIMATION
+   Use the available HF-compatible talking-character/lip-sync implementation.
+   If Wav2Lip, SadTalker, LivePortrait, or LatentSync already exists in the repository, inspect and reuse the existing implementation instead of creating a duplicate implementation.
+
+Do NOT replace the existing architecture unnecessarily.
+
+5. PROVIDER FALLBACK
+   The operation must use the project's centralized provider fallback system.
+
+If the primary HF talking-character attempt fails because of:
+
+- timeout
+- quota
+- unavailable model
+- unavailable endpoint
+- invalid response
+- temporary provider error
+- invalid generated artifact
+
+then automatically continue to the next configured talking-character provider already supported by the codebase.
+
+Do NOT silently return a fake video.
+Do NOT treat an image URL as a video.
+Do NOT mark the operation completed unless a real valid video artifact exists.
+
+6. REAL OUTPUT VALIDATION
+   Every successful talking-character result MUST be validated before acceptance.
+
+Use ffprobe/FFmpeg validation to confirm:
+
+- file exists
+- file size > 0
+- video stream exists
+- audio stream exists when audio is expected
+- duration > 0
+- valid MP4/container structure
+
+If validation fails, treat that provider attempt as FAILED and continue the fallback chain.
+
+7. TIMEOUT PROTECTION
+   Every external talking-character provider request must have a reasonable timeout.
+   A failed/slow provider must NEVER hang the complete video pipeline indefinitely.
+
+When one provider times out:
+provider attempt FAILS
+→ fallback provider starts automatically.
+
+8. PIPELINE STAGE CONTROL
+   The talking-character stage must have explicit progress/status states such as:
+
+queued
+preparing_inputs
+generating_audio
+generating_talking_character
+validating_clip
+composing_video
+completed
+failed
+
+The next stage must start automatically ONLY after the previous stage succeeds.
+
+If a stage fails, stop that branch and invoke the configured fallback/retry logic instead of pretending that the stage succeeded.
+
+9. FFmpeg INTEGRATION
+   Pass only a validated talking-character video into the existing VideoComposer/FFmpeg pipeline.
+
+Preserve the existing:
+
+- background music
+- voice/audio mixing
+- subtitles
+- transitions
+- resolution
+- aspect ratio
+- final MP4 export
+
+Do not break the existing static-image video pipeline.
+
+10. CREDIT SAFETY
+    Credits must NOT be permanently deducted for a failed talking-character generation.
+
+Deduct/commit credits only after the required generation succeeds and the resulting artifact passes validation, following the project's existing credit architecture.
+
+11. ERROR REPORTING
+    When every talking-character provider fails, return a structured error such as:
+
+TALKING_CHARACTER_GENERATION_FAILED
+
+Include:
+
+- provider attempts
+- failure category
+- timeout/provider error information
+- validation failure information
+
+Do NOT expose API keys or secrets.
+
+12. TEST ENDPOINT
+    Add or update a development-only diagnostic endpoint if the project already uses such endpoints, for example:
+
+GET /api/dev/talking-character-status
+
+It should report:
+
+- HF credential configured: true/false
+- available talking-character providers
+- provider order
+- whether required local binaries/models are available
+
+Never return secret values.
+
+13. TESTS
+    Add focused tests for:
+
+A. HF provider configured → provider is selected.
+B. HF provider unavailable → fallback is attempted.
+C. Provider timeout → fallback continues.
+D. Invalid video artifact → provider result rejected.
+E. Missing image → clean validation error.
+F. Missing audio → clean validation error.
+G. All providers fail → AllProvidersFailedError/structured failure.
+H. Valid talking-character MP4 → FFmpeg composition starts.
+I. Existing normal image-based video pipeline still works.
+
+14. VERIFICATION
+    After implementation run:
+
+npm run lint
+npm run build
+
+Restart the server.
+
+Run the talking-character diagnostic tests.
+
+If an actual external HF generation can be safely executed without spending money or credits, perform one controlled end-to-end test.
+Otherwise, do NOT fake a PASS. Clearly report BLOCKED because the external model/provider cannot be safely tested.
+
+FINAL REPORT:
+Report only:
+
+Files changed
+What was implemented
+Provider order
+Environment variables required (names only, never values)
+Tests
+PASS / FAIL / BLOCKED results
+Any remaining blocker
+
+Do NOT modify unrelated files.
+Do NOT redesign the UI.
+Do NOT add paid providers in this task.
