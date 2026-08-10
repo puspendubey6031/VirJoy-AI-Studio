@@ -8,6 +8,7 @@ import { subtitleEngine } from './subtitleEngine.js';
 import { timelineEngine } from './timelineEngine.js';
 import { videoComposer } from './videoComposer.js';
 import { generateScriptWithFallback } from '../providers/scriptProvider.js';
+import { generateTalkingCharacterWithFallback, AllProvidersFailedError } from '../providers/talkingCharacterProvider.js';
 import type {
   EngineCheckpoint,
   GranularSceneSpec,
@@ -35,6 +36,13 @@ export interface ExecutePipelineOptions {
   resumeFromCheckpoint?: EngineCheckpoint;
   apiKey?: string;
   skipFFmpegRender?: boolean;
+  /**
+   * URL of a character portrait image for the talking-character / lip-sync pipeline.
+   * When provided, a lip-sync video is generated (voice audio + face animation)
+   * and wired into the FFmpeg composition as the primary video track.
+   * Omit to use the standard static-image slideshow pipeline.
+   */
+  characterImageUrl?: string;
 }
 
 export class MasterWorkflowEngine {
@@ -61,7 +69,8 @@ export class MasterWorkflowEngine {
       planKey = 'Free',
       resumeFromCheckpoint,
       apiKey,
-      skipFFmpegRender = false
+      skipFFmpegRender = false,
+      characterImageUrl
     } = options;
 
     // Initialize or load existing checkpoint for stage recovery
@@ -174,6 +183,41 @@ export class MasterWorkflowEngine {
 
       const voiceSpec = checkpoint.voiceSpec!;
 
+      // STAGE 5b: TALKING CHARACTER / LIP-SYNC (optional — only runs when characterImageUrl is provided)
+      if (characterImageUrl && !checkpoint.completedStages.includes('talking_character')) {
+        updateStage('talking_character', 'Talking Character / Lip-Sync Generation', 73, 'in_progress',
+          'Generating lip-synced character animation from portrait + voice audio...');
+        try {
+          const tcResult = await generateTalkingCharacterWithFallback({
+            characterImageUrl,
+            audioUrl: voiceSpec.audioBufferUrl || '',
+            durationSeconds: voiceSpec.audioDurationSeconds
+          });
+          checkpoint.talkingCharacterLocalPath = tcResult.localPath;
+          checkpoint.talkingCharacterClipUrl = tcResult.videoUrl;
+          updateStage('talking_character', 'Talking Character / Lip-Sync Generation', 77, 'completed',
+            `Talking-character clip generated via ${tcResult.providerUsed} (${tcResult.durationSeconds.toFixed(1)}s, ${Math.round(tcResult.fileSizeBytes / 1024)}KB).`);
+        } catch (tcErr: any) {
+          const isAllFailed = tcErr instanceof AllProvidersFailedError;
+          const detail = isAllFailed
+            ? `All lip-sync providers failed. Chain: ${tcErr.message}`
+            : tcErr?.message || 'Talking-character generation failed';
+          updateStage('talking_character', 'Talking Character / Lip-Sync Generation', 73, 'failed', undefined, detail);
+          // Re-throw: characterImageUrl was explicitly requested — a silent fallback to plain video is not acceptable
+          throw new Error(`[TalkingCharacter] ${detail}`);
+        }
+      } else if (!characterImageUrl && !checkpoint.completedStages.includes('talking_character')) {
+        // No character image provided — mark skipped, proceed with standard pipeline
+        checkpoint.completedStages.push('talking_character');
+        checkpoint.stageProgresses['talking_character'] = {
+          stage: 'talking_character',
+          stageName: 'Talking Character / Lip-Sync Generation',
+          progressPercent: 100,
+          status: 'skipped',
+          details: 'Skipped — no characterImageUrl provided.'
+        };
+      }
+
       // STAGE 6: SUBTITLE GENERATION
       if (!checkpoint.completedStages.includes('subtitle_generation')) {
         updateStage('subtitle_generation', 'Subtitle Sync & Format Compiler', 78, 'in_progress', 'Generating timestamped subtitle blocks...');
@@ -196,6 +240,11 @@ export class MasterWorkflowEngine {
           subtitles: subtitleSpec,
           hasWatermark: planKey === 'Free'
         });
+        // Wire talking-character clip into the timeline when available
+        if (checkpoint.talkingCharacterLocalPath) {
+          timelinePackage.talkingCharacterLocalPath = checkpoint.talkingCharacterLocalPath;
+          timelinePackage.talkingCharacterClipUrl   = checkpoint.talkingCharacterClipUrl;
+        }
         checkpoint.timelinePackage = timelinePackage;
         updateStage('timeline_builder', 'Unified Timeline Package Builder', 90, 'completed', 'Timeline package assembled successfully.');
       }
@@ -265,6 +314,7 @@ export class MasterWorkflowEngine {
       'scene_breakdown',
       'media_collection',
       'voice_generation',
+      'talking_character',
       'subtitle_generation',
       'timeline_builder',
       'video_composition',

@@ -7,6 +7,7 @@ import { processVideoFFmpeg, processImageSharp, lipSyncWav2Lip, animateSadTalker
 import { createRazorpayOrder, verifyRazorpayPaymentSignature } from './paymentProvider.js';
 import { isOpenRouterConfigured } from './openRouterProvider.js';
 import { getRecentAttempts } from './providerFallback.js';
+import { getTalkingCharacterProviderStatus, type TalkingCharacterProviderStatus } from './talkingCharacterProvider.js';
 
 export * from './scriptProvider.js';
 export * from './imageProvider.js';
@@ -17,6 +18,7 @@ export * from './processingProvider.js';
 export * from './paymentProvider.js';
 export * from './openRouterProvider.js';
 export * from './providerFallback.js';
+export * from './talkingCharacterProvider.js';
 
 export interface ProviderStatusReport {
   script: {
@@ -39,6 +41,7 @@ export interface ProviderStatusReport {
     configuredProviders: string[];
     guaranteedFallback: string;
   };
+  talkingCharacter: TalkingCharacterProviderStatus;
   stockMedia: {
     providers: string[];
     activeKeysConfigured: boolean;
@@ -105,6 +108,7 @@ export function getProviderStatusReport(): ProviderStatusReport {
       configuredProviders: videoConfigured,
       guaranteedFallback: 'DynamicCanvasRender'
     },
+    talkingCharacter: getTalkingCharacterProviderStatus(),
     stockMedia: {
       providers: ['Pexels', 'Pixabay', 'Unsplash', 'CuratedCatalog'],
       activeKeysConfigured: !!(

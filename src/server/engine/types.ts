@@ -5,6 +5,7 @@ export type WorkflowStage =
   | 'scene_breakdown'
   | 'media_collection'
   | 'voice_generation'
+  | 'talking_character'
   | 'subtitle_generation'
   | 'timeline_builder'
   | 'video_composition'
@@ -101,6 +102,10 @@ export interface TimelinePackage {
     watermarkText?: string;
     brandColor?: string;
   };
+  /** Local file path to a validated talking-character video clip (set by talking_character stage) */
+  talkingCharacterLocalPath?: string;
+  /** Public URL of the talking-character video clip (for reference; localPath used for FFmpeg) */
+  talkingCharacterClipUrl?: string;
 }
 
 export interface RenderInstructionPackage {
@@ -137,6 +142,10 @@ export interface EngineCheckpoint {
   scenes?: GranularSceneSpec[];
   mediaAssets?: MediaAssetSpec[];
   voiceSpec?: VoiceEngineSpec;
+  /** Absolute local path of validated talking-character video (set after talking_character stage) */
+  talkingCharacterLocalPath?: string;
+  /** Public URL of the talking-character video (set after talking_character stage) */
+  talkingCharacterClipUrl?: string;
   subtitleSpec?: SubtitleEngineSpec;
   timelinePackage?: TimelinePackage;
   renderPackage?: RenderInstructionPackage;

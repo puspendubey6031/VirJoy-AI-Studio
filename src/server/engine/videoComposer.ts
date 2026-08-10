@@ -206,24 +206,80 @@ export class VideoComposer {
     }
 
     // 4. Build Exact FFmpeg Command with Local Files
-    const inputs = downloadedImages
-      .map((img, idx) => `-loop 1 -t ${timeline.scenes[idx].durationSeconds} -i "${img.localPath}"`)
-      .join(' ');
+    // — Talking-character mode: clip replaces the static-image slideshow —————
+    let ffmpegCommand: string;
 
-    const scalePadFilters = downloadedImages
-      .map((_, idx) => `[${idx}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${idx}];`)
-      .join('');
+    if (timeline.talkingCharacterLocalPath) {
+      // The talking-character clip has video + optionally audio (lip-synced voice).
+      // We use its video track and mix its audio with the background music.
+      const tcPath = timeline.talkingCharacterLocalPath;
 
-    const concatInputs = downloadedImages.map((_, idx) => `[v${idx}]`).join('');
-    const concatFilter = `${concatInputs}concat=n=${downloadedImages.length}:v=1:a=0[vconcat];`;
+      // Validate the clip exists and is readable before building the command
+      if (!fs.existsSync(tcPath)) {
+        throw new Error(`[VideoComposer] Talking-character clip not found at: ${tcPath}`);
+      }
 
-    const voiceIndex = downloadedImages.length;
-    const musicIndex = downloadedImages.length + 1;
-    const audioMixFilter = `[${voiceIndex}:a][${musicIndex}:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]`;
+      // Probe whether the clip has an audio stream
+      let tcHasAudio = false;
+      try {
+        const { stdout: probeOut } = await execAsync(
+          `ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "${tcPath}"`,
+          { timeout: 10000, maxBuffer: 64 * 1024 }
+        );
+        tcHasAudio = probeOut.trim().startsWith('audio');
+      } catch (_) {}
 
-    const filterComplex = `"${scalePadFilters}${concatFilter}${audioMixFilter}"`;
+      if (tcHasAudio) {
+        // Mix the clip's embedded audio (lip-synced voice) with background music
+        ffmpegCommand = [
+          `ffmpeg -y`,
+          `-i "${tcPath}"`,
+          `-i "${musicLocalPath}"`,
+          `-filter_complex`,
+          `"[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[vout];[0:a][1:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]"`,
+          `-map "[vout]"`,
+          `-map "[aout]"`,
+          `-c:v libx264 -preset ultrafast -pix_fmt yuv420p`,
+          `-c:a aac -b:a 192k -movflags +faststart -shortest`,
+          `"${outputFilePath}"`
+        ].join(' ');
+      } else {
+        // Clip has no audio — use the voice track from the standard pipeline + music
+        ffmpegCommand = [
+          `ffmpeg -y`,
+          `-i "${tcPath}"`,
+          `-i "${voiceLocalPath}"`,
+          `-i "${musicLocalPath}"`,
+          `-filter_complex`,
+          `"[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[vout];[1:a][2:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]"`,
+          `-map "[vout]"`,
+          `-map "[aout]"`,
+          `-c:v libx264 -preset ultrafast -pix_fmt yuv420p`,
+          `-c:a aac -b:a 192k -movflags +faststart -shortest`,
+          `"${outputFilePath}"`
+        ].join(' ');
+      }
+    } else {
+      // — Standard static-image slideshow mode ————————————————————————————————
+      const inputs = downloadedImages
+        .map((img, idx) => `-loop 1 -t ${timeline.scenes[idx].durationSeconds} -i "${img.localPath}"`)
+        .join(' ');
 
-    const ffmpegCommand = `ffmpeg -y ${inputs} -i "${voiceLocalPath}" -i "${musicLocalPath}" -filter_complex ${filterComplex} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart -shortest "${outputFilePath}"`;
+      const scalePadFilters = downloadedImages
+        .map((_, idx) => `[${idx}:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[v${idx}];`)
+        .join('');
+
+      const concatInputs = downloadedImages.map((_, idx) => `[v${idx}]`).join('');
+      const concatFilter = `${concatInputs}concat=n=${downloadedImages.length}:v=1:a=0[vconcat];`;
+
+      const voiceIndex = downloadedImages.length;
+      const musicIndex = downloadedImages.length + 1;
+      const audioMixFilter = `[${voiceIndex}:a][${musicIndex}:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]`;
+
+      const filterComplex = `"${scalePadFilters}${concatFilter}${audioMixFilter}"`;
+
+      ffmpegCommand = `ffmpeg -y ${inputs} -i "${voiceLocalPath}" -i "${musicLocalPath}" -filter_complex ${filterComplex} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart -shortest "${outputFilePath}"`;
+    }
 
     // 5. Execute FFmpeg Command (50 MB stderr buffer; 120 s hard timeout)
     const { stdout, stderr } = await execAsync(ffmpegCommand, {

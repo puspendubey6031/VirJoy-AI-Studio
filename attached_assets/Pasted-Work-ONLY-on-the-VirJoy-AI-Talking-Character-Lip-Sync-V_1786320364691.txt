@@ -1,0 +1,242 @@
+Work ONLY on the VirJoy AI Talking Character / Lip-Sync Video Pipeline.
+
+Do NOT modify:
+
+- UI/layout/styling
+- Database migration
+- Credits/pricing
+- Authentication
+- Existing universal provider fallback architecture except where necessary to integrate lip-sync providers
+- Existing working FFmpeg/video rendering pipeline except where necessary to connect the final lip-sync output
+- Music system
+- Unrelated features
+
+GOAL:
+
+Implement and integrate a real talking-character pipeline:
+
+Character Image
+→ Voice/Voice-over
+→ Talking Character / Lip-Sync Provider
+→ Character mouth/face movement synchronized with speech
+→ Real video output
+→ Existing FFmpeg video pipeline
+→ Valid MP4 export
+
+IMPORTANT:
+
+This must NOT simply return the original character image with audio attached.
+
+The final output must contain actual facial/mouth movement synchronized with the voice.
+
+FIRST AUDIT:
+
+Before changing code, inspect the existing project for:
+
+- talking-character code
+- avatar/lip-sync providers
+- HuggingFace integrations
+- Bark integration
+- voice generation
+- video generation providers
+- existing image-to-video functionality
+- existing FFmpeg composition
+- existing providerFallback.ts architecture
+- existing environment-variable handling
+
+Do not assume that a provider exists just because a package is installed.
+
+PROVIDER ARCHITECTURE:
+
+Integrate talking-character generation into the existing centralized provider fallback architecture.
+
+The system should support a chain such as:
+
+Lip-Sync Provider 1
+→ Lip-Sync Provider 2
+→ Lip-Sync Provider 3
+→ configured fallback
+
+Only use providers that actually support talking-avatar/lip-sync generation.
+
+Do NOT pretend that Bark itself is a lip-sync engine. Bark is primarily a voice/audio generation model. It can provide speech audio, but another compatible engine must create the facial/mouth movement.
+
+HUGGING FACE:
+
+If Hugging Face is used for any lip-sync, image-to-video, voice, or related model:
+
+Use environment variables/secrets.
+
+Do NOT hard-code tokens.
+
+Support a configurable token pool only if technically useful and compliant with Hugging Face's API/service limits.
+
+For example, if the codebase needs multiple configured tokens, support:
+
+HF_TOKEN
+HF_TOKEN_2
+HF_TOKEN_3
+
+But do NOT require unnecessary tokens.
+
+If only one valid token is needed, HF_TOKEN alone should work.
+
+If multiple tokens are configured, the provider manager may select an available token according to the existing fallback/rate-limit handling.
+
+IMPORTANT:
+Do NOT automatically invent, discover, scrape, or extract tokens from a Hugging Face account.
+
+The application must read tokens only from environment variables/secrets.
+
+VOICE:
+
+Use the existing Universal Provider Fallback System for speech generation.
+
+If the current voice chain is:
+
+gTTS
+→ HuggingFace Bark
+→ LongCat AudioDiT
+
+preserve it.
+
+A voice provider failure must automatically move to the next compatible provider.
+
+LIP-SYNC:
+
+After valid voice audio is produced, pass:
+
+character image + voice audio
+
+to the configured lip-sync/talking-character provider.
+
+The provider must return a REAL video artifact.
+
+Validate the returned video before continuing.
+
+Do not treat an image URL as a successful talking-character video.
+
+VIDEO VALIDATION:
+
+After lip-sync generation verify:
+
+- file exists
+- file size > 0
+- valid MP4/container
+- video stream exists
+- audio stream exists
+- duration > 0
+- FFmpeg/ffprobe can read the file
+
+Only then pass the result to the existing FFmpeg composition pipeline.
+
+ERROR HANDLING:
+
+If:
+
+- voice generation fails
+- character image is invalid
+- lip-sync provider fails
+- provider times out
+- provider quota is exhausted
+- API key/token is missing
+- returned media is invalid
+
+then automatically attempt the next compatible provider where one exists.
+
+Never return fake success.
+
+Never silently produce an image instead of a video.
+
+TIMEOUTS:
+
+Every external lip-sync request must have a reasonable timeout.
+
+A failed provider must not hang the entire video-generation request.
+
+CREDITS:
+
+Do NOT change existing credit rules.
+
+Do not deduct credits once per provider attempt.
+
+A single generation request must not consume multiple credits merely because fallback providers were attempted.
+
+FINAL VIDEO:
+
+Connect the successful talking-character video to the existing Video Engine/FFmpeg pipeline.
+
+Do not rewrite the existing working FFmpeg architecture.
+
+Make sure the final exported MP4 remains valid after composition.
+
+TESTING:
+
+Run:
+
+npm run lint
+npm run build
+npm run dev
+GET /api/health
+
+Then perform safe tests:
+
+1. Voice generation test.
+2. Character-image validation test.
+3. Lip-sync provider configuration/status test.
+4. Provider failure → fallback test using mocked/controlled failure where possible.
+5. One real talking-character generation test if a configured compatible provider/API is available.
+6. Validate the resulting MP4 with ffprobe.
+7. Run one final FFmpeg composition using the generated talking-character clip.
+
+If no compatible lip-sync provider/API is configured, DO NOT claim the feature works.
+
+Instead report exactly:
+
+- which provider integration exists in code;
+- which API key/token is missing;
+- which environment variable is required;
+- which step is blocked.
+
+ENVIRONMENT VARIABLES:
+
+Do not invent provider secrets.
+
+Inspect the actual provider implementation and document the exact required variable names.
+
+At the end report:
+
+Files Changed:
+
+- exact file names
+
+Talking Character Architecture:
+
+- Character image:
+- Voice provider chain:
+- Lip-sync provider chain:
+- Final video pipeline:
+
+Environment Variables Required:
+
+- exact variable names only
+- mark configured/missing
+- NEVER print secret values
+
+Verification:
+
+- lint: PASS/FAIL
+- build: PASS/FAIL
+- server startup: PASS/FAIL
+- voice generation: PASS/FAIL
+- lip-sync provider availability: PASS/FAIL/BLOCKED
+- fallback test: PASS/FAIL
+- real talking-character generation: PASS/FAIL/BLOCKED
+- MP4 validation: PASS/FAIL
+- final FFmpeg composition: PASS/FAIL
+
+Remaining Blockers:
+
+- exact blockers only
+
+Do NOT make any changes outside the Talking Character / Lip-Sync Pipeline.

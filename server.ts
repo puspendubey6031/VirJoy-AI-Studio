@@ -1844,6 +1844,105 @@ async function startServer() {
     res.status(allPass ? 200 : 207).json({ allPass, results });
   });
 
+  // ── Talking-character pipeline diagnostic endpoint ────────────────────────
+  app.get('/api/dev/talking-character-status', async (_req, res) => {
+    const { getTalkingCharacterProviderStatus } = await import('./src/server/providers/talkingCharacterProvider.js');
+    const status = getTalkingCharacterProviderStatus();
+
+    const blockers: string[] = [];
+    if (!status.requiredEnvVars['SYNCLABS_API_KEY'])    blockers.push('SYNCLABS_API_KEY missing — SyncLabs unavailable');
+    if (!status.requiredEnvVars['DID_API_KEY'])         blockers.push('DID_API_KEY missing — D-ID unavailable');
+    if (!status.requiredEnvVars['REPLICATE_API_TOKEN']) blockers.push('REPLICATE_API_TOKEN missing — Replicate-Wav2Lip unavailable');
+    if (!status.requiredEnvVars['HUGGINGFACE_API_KEY']) blockers.push('HUGGINGFACE_API_KEY missing — HF-LatentSync will use the public Gradio queue (may be slow)');
+
+    // Determine overall readiness
+    const hasCommercialProvider = (
+      status.requiredEnvVars['SYNCLABS_API_KEY'] ||
+      status.requiredEnvVars['DID_API_KEY'] ||
+      status.requiredEnvVars['REPLICATE_API_TOKEN']
+    );
+
+    res.json({
+      status: 'ok',
+      pipelineAvailable: true,  // HF-LatentSync is always in the chain
+      hasCommercialProvider,
+      providerStatus: status,
+      blockers,
+      requiredToEnable: {
+        SYNCLABS_API_KEY:    { configured: status.requiredEnvVars['SYNCLABS_API_KEY'],    purpose: 'SyncLabs commercial lip-sync (fastest)' },
+        DID_API_KEY:         { configured: status.requiredEnvVars['DID_API_KEY'],          purpose: 'D-ID commercial talking avatar' },
+        REPLICATE_API_TOKEN: { configured: status.requiredEnvVars['REPLICATE_API_TOKEN'],  purpose: 'Replicate wav2lip model' },
+        HUGGINGFACE_API_KEY: { configured: status.requiredEnvVars['HUGGINGFACE_API_KEY'],  purpose: 'HF LatentSync Gradio space — optional key speeds up queue' }
+      },
+      usageNote: 'Pass characterImageUrl in your video generation request to activate the talking-character pipeline.'
+    });
+  });
+
+  // ── Talking-character validation test (safe — no external calls) ──────────
+  app.get('/api/dev/talking-character-test', async (_req, res) => {
+    const { validateTalkingCharacterVideo, getTalkingCharacterProviderStatus } = await import('./src/server/providers/talkingCharacterProvider.js');
+    const { runWithFallback, AllProvidersFailedError } = await import('./src/server/providers/providerFallback.js');
+
+    const tests: Record<string, { pass: boolean; detail: string }> = {};
+
+    // Test 1: provider chain configuration is readable
+    try {
+      const status = getTalkingCharacterProviderStatus();
+      tests['1_provider_chain_config'] = {
+        pass: Array.isArray(status.fallbackOrder) && status.fallbackOrder.length === 4,
+        detail: `Chain: ${status.fallbackOrder.join(' → ')} | configured: ${status.configuredProviders.join(', ') || 'none'}`
+      };
+    } catch (e) { tests['1_provider_chain_config'] = { pass: false, detail: String(e) }; }
+
+    // Test 2: validateTalkingCharacterVideo handles missing file correctly
+    try {
+      const result = await validateTalkingCharacterVideo('/tmp/__nonexistent_tc_file__.mp4');
+      tests['2_validation_missing_file'] = {
+        pass: result.valid === false && !!result.error,
+        detail: `valid=${result.valid} error="${result.error}"`
+      };
+    } catch (e) { tests['2_validation_missing_file'] = { pass: false, detail: String(e) }; }
+
+    // Test 3: provider missing-key guard — provider skipped if env var absent
+    try {
+      const fakeKey = process.env.__NONEXISTENT_TC_KEY__;
+      const chain: any[] = [];
+      if (fakeKey) chain.push({ name: 'KeyedProvider', run: async () => ({ videoUrl: 'x', localPath: 'x', providerUsed: 'X', durationSeconds: 1, fileSizeBytes: 1 }) });
+      chain.push({ name: 'NoKeyFallback', run: async () => ({ videoUrl: 'ok', localPath: '/tmp/ok.mp4', providerUsed: 'NoKeyFallback', durationSeconds: 2, fileSizeBytes: 1024 }) });
+      const { providerUsed } = await runWithFallback('tc-test-3', chain);
+      tests['3_missing_key_guard'] = {
+        pass: providerUsed === 'NoKeyFallback',
+        detail: `providerUsed=${providerUsed}`
+      };
+    } catch (e) { tests['3_missing_key_guard'] = { pass: false, detail: String(e) }; }
+
+    // Test 4: AllProvidersFailedError raised when chain is empty
+    try {
+      await runWithFallback('tc-test-4', []);
+      tests['4_empty_chain_error'] = { pass: false, detail: 'Should have thrown AllProvidersFailedError' };
+    } catch (e) {
+      tests['4_empty_chain_error'] = {
+        pass: e instanceof AllProvidersFailedError,
+        detail: e instanceof AllProvidersFailedError ? 'Correct AllProvidersFailedError raised' : String(e)
+      };
+    }
+
+    // Test 5: env var presence report is correct format
+    try {
+      const status = getTalkingCharacterProviderStatus();
+      const keys = Object.keys(status.requiredEnvVars);
+      const expectedKeys = ['SYNCLABS_API_KEY', 'DID_API_KEY', 'REPLICATE_API_TOKEN', 'HUGGINGFACE_API_KEY'];
+      const allPresent = expectedKeys.every(k => keys.includes(k));
+      tests['5_env_var_report_format'] = {
+        pass: allPresent,
+        detail: `Keys reported: ${keys.join(', ')}`
+      };
+    } catch (e) { tests['5_env_var_report_format'] = { pass: false, detail: String(e) }; }
+
+    const allPass = Object.values(tests).every(t => t.pass);
+    res.status(allPass ? 200 : 207).json({ allPass, tests });
+  });
+
   // --- VITE / SERVING FRONTEND ---
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
