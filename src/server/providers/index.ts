@@ -8,6 +8,7 @@ import { createRazorpayOrder, verifyRazorpayPaymentSignature } from './paymentPr
 import { isOpenRouterConfigured } from './openRouterProvider.js';
 import { getRecentAttempts } from './providerFallback.js';
 import { getTalkingCharacterProviderStatus, type TalkingCharacterProviderStatus } from './talkingCharacterProvider.js';
+import { getMusicProviderStatus, type MusicProviderStatus } from './musicProvider.js';
 
 export * from './scriptProvider.js';
 export * from './imageProvider.js';
@@ -19,6 +20,7 @@ export * from './paymentProvider.js';
 export * from './openRouterProvider.js';
 export * from './providerFallback.js';
 export * from './talkingCharacterProvider.js';
+export * from './musicProvider.js';
 
 export interface ProviderStatusReport {
   script: {
@@ -42,6 +44,7 @@ export interface ProviderStatusReport {
     guaranteedFallback: string;
   };
   talkingCharacter: TalkingCharacterProviderStatus;
+  music: MusicProviderStatus;
   stockMedia: {
     providers: string[];
     activeKeysConfigured: boolean;
@@ -109,6 +112,7 @@ export function getProviderStatusReport(): ProviderStatusReport {
       guaranteedFallback: 'DynamicCanvasRender'
     },
     talkingCharacter: getTalkingCharacterProviderStatus(),
+    music: getMusicProviderStatus(),
     stockMedia: {
       providers: ['Pexels', 'Pixabay', 'Unsplash', 'CuratedCatalog'],
       activeKeysConfigured: !!(

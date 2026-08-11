@@ -5,6 +5,7 @@ export type WorkflowStage =
   | 'scene_breakdown'
   | 'media_collection'
   | 'voice_generation'
+  | 'music_generation'
   | 'talking_character'
   | 'subtitle_generation'
   | 'timeline_builder'
@@ -106,6 +107,16 @@ export interface TimelinePackage {
   talkingCharacterLocalPath?: string;
   /** Public URL of the talking-character video clip (for reference; localPath used for FFmpeg) */
   talkingCharacterClipUrl?: string;
+  /**
+   * Absolute local path of a pre-validated BGM file (set by music_generation stage).
+   * When present, videoComposer skips the URL-download step and uses this directly.
+   */
+  bgmLocalPath?: string;
+  /**
+   * Absolute local path of a pre-validated SFX file (set by music_generation stage).
+   * Optional — absent when SFX generation failed or was skipped.
+   */
+  sfxLocalPath?: string;
 }
 
 export interface RenderInstructionPackage {
@@ -146,6 +157,10 @@ export interface EngineCheckpoint {
   talkingCharacterLocalPath?: string;
   /** Public URL of the talking-character video (set after talking_character stage) */
   talkingCharacterClipUrl?: string;
+  /** Absolute local path of pre-validated BGM file (set by music_generation stage) */
+  bgmLocalPath?: string;
+  /** Absolute local path of pre-validated SFX file (set by music_generation stage; optional) */
+  sfxLocalPath?: string;
   subtitleSpec?: SubtitleEngineSpec;
   timelinePackage?: TimelinePackage;
   renderPackage?: RenderInstructionPackage;

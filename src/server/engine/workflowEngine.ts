@@ -9,6 +9,7 @@ import { timelineEngine } from './timelineEngine.js';
 import { videoComposer } from './videoComposer.js';
 import { generateScriptWithFallback } from '../providers/scriptProvider.js';
 import { generateTalkingCharacterWithFallback, AllProvidersFailedError } from '../providers/talkingCharacterProvider.js';
+import { generateBackgroundMusic, generateSFX } from '../providers/musicProvider.js';
 import type {
   EngineCheckpoint,
   GranularSceneSpec,
@@ -183,7 +184,50 @@ export class MasterWorkflowEngine {
 
       const voiceSpec = checkpoint.voiceSpec!;
 
-      // STAGE 5b: TALKING CHARACTER / LIP-SYNC (optional — only runs when characterImageUrl is provided)
+      // STAGE 5b: MUSIC / BGM / SFX GENERATION (optional — failures never abort the pipeline)
+      if (!checkpoint.completedStages.includes('music_generation')) {
+        updateStage('music_generation', 'Music & Background Audio Generation', 73, 'in_progress',
+          'Selecting background music and generating sound effects...');
+
+        const musicMood = checkpoint.scenes?.[0]?.musicMood || 'cinematic_synth';
+        const duration  = checkpoint.scenes?.reduce((a, s) => a + s.durationSeconds, 0) || targetDurationSeconds;
+        const musicTmpDir = path.join(process.cwd(), `tmp_music_${jobId}_${Date.now()}`);
+
+        let bgmResult: Awaited<ReturnType<typeof generateBackgroundMusic>> = null;
+        let sfxResult: Awaited<ReturnType<typeof generateSFX>>            = null;
+
+        // ── BGM ───────────────────────────────────────────────────────────────
+        try {
+          bgmResult = await generateBackgroundMusic(musicMood, duration, musicTmpDir);
+          if (bgmResult) {
+            checkpoint.bgmLocalPath = bgmResult.localPath;
+            console.log(`[WorkflowEngine] BGM ready via ${bgmResult.providerUsed} (${bgmResult.durationSeconds.toFixed(1)}s)`);
+          } else {
+            console.warn('[WorkflowEngine] BGM generation returned null — videoComposer will use sine-wave fallback');
+          }
+        } catch (bgmErr: any) {
+          console.warn('[WorkflowEngine] BGM generation threw (non-fatal):', bgmErr?.message);
+        }
+
+        // ── SFX (optional) ────────────────────────────────────────────────────
+        try {
+          sfxResult = await generateSFX('transition', Math.min(duration, 3), musicTmpDir);
+          if (sfxResult) {
+            checkpoint.sfxLocalPath = sfxResult.localPath;
+            console.log(`[WorkflowEngine] SFX ready via ${sfxResult.providerUsed}`);
+          }
+        } catch (sfxErr: any) {
+          console.warn('[WorkflowEngine] SFX generation threw (non-fatal):', sfxErr?.message);
+        }
+
+        const detail = [
+          bgmResult ? `BGM: ${bgmResult.providerUsed}` : 'BGM: sine-wave fallback (videoComposer)',
+          sfxResult ? `SFX: ${sfxResult.providerUsed}` : 'SFX: skipped'
+        ].join(' | ');
+        updateStage('music_generation', 'Music & Background Audio Generation', 75, 'completed', detail);
+      }
+
+      // STAGE 5c: TALKING CHARACTER / LIP-SYNC (optional — only runs when characterImageUrl is provided)
       if (characterImageUrl && !checkpoint.completedStages.includes('talking_character')) {
         updateStage('talking_character', 'Talking Character / Lip-Sync Generation', 73, 'in_progress',
           'Generating lip-synced character animation from portrait + voice audio...');
@@ -207,6 +251,7 @@ export class MasterWorkflowEngine {
           throw new Error(`[TalkingCharacter] ${detail}`);
         }
       } else if (!characterImageUrl && !checkpoint.completedStages.includes('talking_character')) {
+
         // No character image provided — mark skipped, proceed with standard pipeline
         checkpoint.completedStages.push('talking_character');
         checkpoint.stageProgresses['talking_character'] = {
@@ -244,6 +289,13 @@ export class MasterWorkflowEngine {
         if (checkpoint.talkingCharacterLocalPath) {
           timelinePackage.talkingCharacterLocalPath = checkpoint.talkingCharacterLocalPath;
           timelinePackage.talkingCharacterClipUrl   = checkpoint.talkingCharacterClipUrl;
+        }
+        // Wire pre-validated BGM / SFX paths from music_generation stage
+        if (checkpoint.bgmLocalPath) {
+          timelinePackage.bgmLocalPath = checkpoint.bgmLocalPath;
+        }
+        if (checkpoint.sfxLocalPath) {
+          timelinePackage.sfxLocalPath = checkpoint.sfxLocalPath;
         }
         checkpoint.timelinePackage = timelinePackage;
         updateStage('timeline_builder', 'Unified Timeline Package Builder', 90, 'completed', 'Timeline package assembled successfully.');
@@ -314,6 +366,7 @@ export class MasterWorkflowEngine {
       'scene_breakdown',
       'media_collection',
       'voice_generation',
+      'music_generation',
       'talking_character',
       'subtitle_generation',
       'timeline_builder',

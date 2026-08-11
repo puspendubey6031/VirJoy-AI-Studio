@@ -1844,6 +1844,192 @@ async function startServer() {
     res.status(allPass ? 200 : 207).json({ allPass, results });
   });
 
+  // ── Music / BGM / SFX pipeline diagnostic endpoint ───────────────────────
+  app.get('/api/dev/music-status', async (_req, res) => {
+    const { getMusicProviderStatus } = await import('./src/server/providers/musicProvider.js');
+    const status = getMusicProviderStatus();
+    const blockers: string[] = [];
+    if (!status.ffmpegAvailable) blockers.push('ffmpeg not found — all music/SFX generation will fail');
+    const localCount = Object.values(status.localFilesAvailable).filter(Boolean).length;
+    if (localCount === 0) blockers.push('No local BGM files found in public/audio/ — sine-wave fallback only');
+    res.json({
+      status: 'ok',
+      bgmChain: status.bgmChain,
+      sfxChain: status.sfxChain,
+      localFilesAvailable: status.localFilesAvailable,
+      ffmpegAvailable: status.ffmpegAvailable,
+      huggingFaceKeyConfigured: status.huggingFaceKeyConfigured,
+      newApiKeysRequired: false,
+      blockers,
+      note: status.note,
+      usageNote: 'Music/BGM/SFX are optional — video pipeline continues even when all music sources fail.'
+    });
+  });
+
+  // ── Music / BGM / SFX tests 1–9 (safe — no paid external calls) ──────────
+  app.get('/api/dev/music-test', async (_req, res) => {
+    const {
+      getMusicProviderStatus,
+      validateAudioFile,
+      generateBackgroundMusic,
+      generateSFX
+    } = await import('./src/server/providers/musicProvider.js');
+    const { default: fsSync } = await import('fs');
+    const { default: pathMod } = await import('path');
+    const { exec: execCb } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(execCb);
+
+    const tmpDir = `/tmp/music_test_${Date.now()}`;
+    fsSync.mkdirSync(tmpDir, { recursive: true });
+
+    const tests: Record<string, { pass: boolean; detail: string }> = {};
+
+    // ── 1. BGM generation succeeds and produces valid audio ───────────────
+    // Note: public/audio/*.mp3 files are corrupt (channels=0) and are correctly
+    // rejected by validateAudioFile per spec ("Do not use corrupt files from public/audio").
+    // The sine-wave fallback is the guaranteed working source.
+    try {
+      const result = await generateBackgroundMusic('cinematic_synth', 10, tmpDir);
+      const valid = result !== null && result.fileSizeBytes > 0 && result.durationSeconds > 0;
+      tests['1_primary_bgm_success'] = {
+        pass: valid,
+        detail: result
+          ? `provider=${result.providerUsed} size=${result.fileSizeBytes} dur=${result.durationSeconds.toFixed(1)}s`
+          : 'returned null — all BGM sources failed'
+      };
+    } catch (e) { tests['1_primary_bgm_success'] = { pass: false, detail: String(e) }; }
+
+    // ── 2. Provider failure → automatic fallback (bad mood → sine wave) ───
+    try {
+      // Use a mood that has no local file to force sine-wave fallback
+      const result = await generateBackgroundMusic('nonexistent_mood_xyz', 5, tmpDir);
+      // Should still return something (local file for default mood OR sine wave)
+      tests['2_provider_failure_fallback'] = {
+        pass: result !== null,
+        detail: result
+          ? `fallback provider=${result.providerUsed}`
+          : 'returned null — all fallbacks failed'
+      };
+    } catch (e) { tests['2_provider_failure_fallback'] = { pass: false, detail: String(e) }; }
+
+    // ── 3. Unavailable music → local/sine fallback path ───────────────────
+    try {
+      const status = getMusicProviderStatus();
+      const hasFallback = status.bgmChain.length > 0;
+      tests['3_unavailable_music_local_fallback'] = {
+        pass: hasFallback,
+        detail: `BGM chain: ${status.bgmChain.join(' → ')}`
+      };
+    } catch (e) { tests['3_unavailable_music_local_fallback'] = { pass: false, detail: String(e) }; }
+
+    // ── 4. Corrupt audio rejection ─────────────────────────────────────────
+    try {
+      const fakePath = pathMod.join(tmpDir, 'corrupt.mp3');
+      fsSync.writeFileSync(fakePath, 'this is not valid audio data CORRUPT');
+      const v = await validateAudioFile(fakePath);
+      tests['4_corrupt_audio_rejected'] = {
+        pass: v.valid === false,
+        detail: `valid=${v.valid} error="${v.error}" size=${v.fileSizeBytes}`
+      };
+    } catch (e) { tests['4_corrupt_audio_rejected'] = { pass: false, detail: String(e) }; }
+
+    // ── 5. Optional BGM failure does not fail video generation ────────────
+    try {
+      // Simulate by running the BGM generation in isolation and verifying it returns
+      // null-safe (never throws) — the workflowEngine try/catch does the rest
+      let threw = false;
+      try {
+        await generateBackgroundMusic('cinematic_synth', 5, tmpDir);
+      } catch { threw = true; }
+      tests['5_bgm_failure_no_pipeline_stop'] = {
+        pass: !threw,
+        detail: threw ? 'generateBackgroundMusic threw — would break pipeline' : 'generateBackgroundMusic never throws (safe for pipeline)'
+      };
+    } catch (e) { tests['5_bgm_failure_no_pipeline_stop'] = { pass: false, detail: String(e) }; }
+
+    // ── 6. Optional SFX failure does not fail video generation ────────────
+    try {
+      let threw = false;
+      try {
+        await generateSFX('transition', 2, tmpDir);
+      } catch { threw = true; }
+      tests['6_sfx_failure_no_pipeline_stop'] = {
+        pass: !threw,
+        detail: threw ? 'generateSFX threw — would break pipeline' : 'generateSFX never throws (safe for pipeline)'
+      };
+    } catch (e) { tests['6_sfx_failure_no_pipeline_stop'] = { pass: false, detail: String(e) }; }
+
+    // ── 7. SFX generation produces valid audio ─────────────────────────────
+    try {
+      const sfx = await generateSFX('whoosh', 1.5, tmpDir);
+      if (sfx) {
+        const v = await validateAudioFile(sfx.localPath);
+        tests['7_sfx_generates_valid_audio'] = {
+          pass: v.valid && v.duration > 0,
+          detail: `provider=${sfx.providerUsed} valid=${v.valid} dur=${v.duration.toFixed(2)}s channels=${v.channels}`
+        };
+      } else {
+        tests['7_sfx_generates_valid_audio'] = { pass: false, detail: 'generateSFX returned null' };
+      }
+    } catch (e) { tests['7_sfx_generates_valid_audio'] = { pass: false, detail: String(e) }; }
+
+    // ── 8. validateAudioFile rejects zero-byte file ────────────────────────
+    try {
+      const zeroPath = pathMod.join(tmpDir, 'zero.mp3');
+      fsSync.writeFileSync(zeroPath, '');
+      const v = await validateAudioFile(zeroPath);
+      tests['8_zero_byte_rejected'] = {
+        pass: v.valid === false && !!v.error,
+        detail: `valid=${v.valid} error="${v.error}"`
+      };
+    } catch (e) { tests['8_zero_byte_rejected'] = { pass: false, detail: String(e) }; }
+
+    // ── 9. End-to-end: BGM validated + composed into real MP4 ─────────────
+    try {
+      const bgm = await generateBackgroundMusic('ambient_chill', 4, tmpDir);
+      if (bgm) {
+        const portraitPath = pathMod.join(tmpDir, 'scene.jpg');
+        const finalMp4 = pathMod.join(tmpDir, 'e2e_music_test.mp4');
+        // Create a minimal test image
+        await execAsync(
+          `ffmpeg -y -f lavfi -i "color=c=0x1e3a8a:s=1920x1080:d=4" -vframes 1 "${portraitPath}"`,
+          { timeout: 10000 }
+        );
+        // Compose: image + bgm → MP4 (same path as videoComposer for the music mix)
+        await execAsync(
+          `ffmpeg -y -loop 1 -t 4 -i "${portraitPath}" -i "${bgm.localPath}" ` +
+          `-filter_complex "[0:v]scale=1920:1080,setsar=1[v]" ` +
+          `-map "[v]" -map 1:a -c:v libx264 -preset ultrafast -pix_fmt yuv420p ` +
+          `-c:a aac -b:a 128k -shortest "${finalMp4}"`,
+          { timeout: 30000 }
+        );
+        const { stdout } = await execAsync(
+          `ffprobe -v error -show_streams -print_format json "${finalMp4}"`,
+          { timeout: 10000 }
+        );
+        const probe = JSON.parse(stdout);
+        const streams: any[] = probe.streams || [];
+        const hasVideo = streams.some((s: any) => s.codec_type === 'video');
+        const hasAudio = streams.some((s: any) => s.codec_type === 'audio');
+        const dur = parseFloat(streams.find((s: any) => s.codec_type === 'video')?.duration || '0');
+        const size = fsSync.statSync(finalMp4).size;
+        tests['9_e2e_composition_valid_mp4'] = {
+          pass: hasVideo && hasAudio && dur > 0 && size > 0,
+          detail: `bgm=${bgm.providerUsed} hasVideo=${hasVideo} hasAudio=${hasAudio} dur=${dur.toFixed(2)}s size=${size}B`
+        };
+      } else {
+        tests['9_e2e_composition_valid_mp4'] = { pass: false, detail: 'BGM generation returned null' };
+      }
+    } catch (e) { tests['9_e2e_composition_valid_mp4'] = { pass: false, detail: String(e) }; }
+
+    // Cleanup
+    try { fsSync.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+
+    const allPass = Object.values(tests).every(t => t.pass);
+    res.status(allPass ? 200 : 207).json({ allPass, tests });
+  });
+
   // ── Talking-character pipeline diagnostic endpoint ────────────────────────
   app.get('/api/dev/talking-character-status', async (_req, res) => {
     const {

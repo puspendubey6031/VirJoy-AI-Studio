@@ -180,7 +180,23 @@ export class VideoComposer {
     // 3. Resolve or Download Background Music
     const musicLocalPath = path.join(tmpDir, 'music.mp3');
     let musicSuccess = false;
-    if (timeline.backgroundMusicUrl && (timeline.backgroundMusicUrl.startsWith('http://') || timeline.backgroundMusicUrl.startsWith('https://'))) {
+
+    // Fast path: music_generation stage already validated a local file — use it directly
+    if (timeline.bgmLocalPath && fs.existsSync(timeline.bgmLocalPath)) {
+      try {
+        fs.copyFileSync(timeline.bgmLocalPath, musicLocalPath);
+        if (await this.isAudioFileUsable(musicLocalPath)) {
+          musicSuccess = true;
+          console.log(`[VideoComposer] Using pre-validated BGM from music_generation stage: ${timeline.bgmLocalPath}`);
+        } else {
+          console.warn('[VideoComposer] Pre-validated BGM failed usability re-check — falling back to URL/sine-wave');
+        }
+      } catch (err) {
+        console.warn('[VideoComposer] Failed to copy pre-validated BGM:', err);
+      }
+    }
+
+    if (!musicSuccess && timeline.backgroundMusicUrl && (timeline.backgroundMusicUrl.startsWith('http://') || timeline.backgroundMusicUrl.startsWith('https://'))) {
       try {
         const res = await fetch(timeline.backgroundMusicUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
         if (res.ok) {
@@ -191,7 +207,7 @@ export class VideoComposer {
       } catch (err) {
         console.warn('[VideoComposer] Music download failed:', err);
       }
-    } else if (timeline.backgroundMusicUrl && timeline.backgroundMusicUrl.startsWith('/')) {
+    } else if (!musicSuccess && timeline.backgroundMusicUrl && timeline.backgroundMusicUrl.startsWith('/')) {
       const localSource = path.join(process.cwd(), 'public', timeline.backgroundMusicUrl);
       if (fs.existsSync(localSource) && await this.isAudioFileUsable(localSource)) {
         fs.copyFileSync(localSource, musicLocalPath);
