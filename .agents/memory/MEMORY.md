@@ -1,3 +1,4 @@
 - [Vite 6 + Replit blank-page fix](vite6-replit-fix.md) — three causes: allowedHosts blocks proxy, port/webview mismatch, Tailwind v4 @source needed in middleware mode.
 - [Talking-character pipeline](talking-character-pipeline.md) — real lip-sync provider chain wired into workflow engine; env vars, hook point, FFmpeg integration documented.
-- [Music / BGM / SFX pipeline](music-bgm-sfx-pipeline.md) — local→sine chain; public/audio/*.mp3 are corrupt (channels=0) so sine-wave is the effective BGM; no new API keys needed.
+- [Music / BGM / SFX pipeline](music-bgm-sfx-pipeline.md) — 4-provider BGM chain (SoundHelix→secondary→local→harmonic); local files repaired; per-scene SFX with adelay; BGM ducking via sidechaincompress.
+- [Scene SFX wiring](scene-sfx-wiring.md) — transitionEffect→sfxType map in sceneGenerator; per-scene SFX generated in workflowEngine; placed at transition timestamps via adelay in videoComposer.

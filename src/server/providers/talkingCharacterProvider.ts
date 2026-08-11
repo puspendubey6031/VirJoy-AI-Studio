@@ -720,11 +720,18 @@ async function runReplicate(
 /**
  * Generate a talking-character video with automatic provider fallback.
  *
+ * Live infrastructure status (last verified 2026-08-11):
+ *   • HF-LatentSync (fffiloni-latentsync.hf.space): Gradio 6.14.0 loads (HTTP 200),
+ *     but /queue/join and /run/predict both return 404 — backend queue API not accessible.
+ *     Status: NOT VERIFIED for real generation.
+ *   • HF-SadTalker (vinthony-sadtalker.hf.space): HTTP 503 — space down.
+ *     Status: REMOVED from active chain.
+ *
  * Chain order when HUGGINGFACE_API_KEY is set:
- *   HF-LatentSync → HF-SadTalker → SyncLabs → D-ID → Replicate-Wav2Lip
+ *   HF-LatentSync → SyncLabs → D-ID → Replicate-Wav2Lip
  *
  * Chain order when HUGGINGFACE_API_KEY is NOT set:
- *   SyncLabs → D-ID → Replicate-Wav2Lip → HF-LatentSync (public queue)
+ *   SyncLabs → D-ID → Replicate-Wav2Lip → HF-LatentSync (public queue fallback)
  *
  * @throws AllProvidersFailedError if every provider fails
  * @throws Error if input validation fails (before any external call)
@@ -754,17 +761,18 @@ export async function generateTalkingCharacterWithFallback(
   const chain: FallbackProvider<R>[] = [];
 
   if (hfKey) {
-    // HF-FIRST: both HF providers go before any commercial provider
+    // HF-LatentSync first when key is configured.
+    // NOTE: As of 2026-08-11, /queue/join returns 404 — will fail fast and fall through.
     chain.push({ name: 'HF-LatentSync', timeoutMs: 260_000, run: () => runHFLatentSync(options, workDir) });
-    chain.push({ name: 'HF-SadTalker',  timeoutMs: 260_000, run: () => runHFSadTalker(options, workDir) });
+    // HF-SadTalker REMOVED: consistently returning HTTP 503 (space down).
   }
 
   // Commercial providers — only added when their API key is configured
-  if (process.env.SYNCLABS_API_KEY)    chain.push({ name: 'SyncLabs',         timeoutMs: 150_000, run: () => runSyncLabs(options, workDir) });
-  if (process.env.DID_API_KEY)         chain.push({ name: 'D-ID',             timeoutMs: 150_000, run: () => runDID(options, workDir) });
+  if (process.env.SYNCLABS_API_KEY)    chain.push({ name: 'SyncLabs',          timeoutMs: 150_000, run: () => runSyncLabs(options, workDir) });
+  if (process.env.DID_API_KEY)         chain.push({ name: 'D-ID',              timeoutMs: 150_000, run: () => runDID(options, workDir) });
   if (process.env.REPLICATE_API_TOKEN) chain.push({ name: 'Replicate-Wav2Lip', timeoutMs: 210_000, run: () => runReplicate(options, workDir) });
 
-  // If HF key absent, HF-LatentSync goes last (public queue — slow but always present)
+  // If HF key absent, HF-LatentSync goes last (public queue — may be slow)
   if (!hfKey) {
     chain.push({ name: 'HF-LatentSync', timeoutMs: 260_000, run: () => runHFLatentSync(options, workDir) });
   }
@@ -799,25 +807,32 @@ export function getTalkingCharacterProviderStatus(): TalkingCharacterProviderSta
   const replicateOk  = !!process.env.REPLICATE_API_TOKEN;
 
   // Build actual chain order (mirrors generateTalkingCharacterWithFallback logic)
+  // NOTE: HF-SadTalker removed (HTTP 503, consistently dead as of 2026-08-11).
+  //       HF-LatentSync: Gradio UI loads (HTTP 200) but queue/join API returns 404 — NOT VERIFIED.
   const order: string[] = [];
-  if (hfKeyOk) { order.push('HF-LatentSync', 'HF-SadTalker'); }
+  if (hfKeyOk) { order.push('HF-LatentSync [NOT VERIFIED — queue/join 404]'); }
   if (syncLabsOk)   order.push('SyncLabs');
   if (didOk)        order.push('D-ID');
   if (replicateOk)  order.push('Replicate-Wav2Lip');
-  if (!hfKeyOk)     order.push('HF-LatentSync');
+  if (!hfKeyOk)     order.push('HF-LatentSync [NOT VERIFIED — queue/join 404]');
 
   const configured: string[] = [];
   const unconfigured: string[] = [];
 
-  if (hfKeyOk) { configured.push('HF-LatentSync', 'HF-SadTalker'); }
-  else unconfigured.push('HF-LatentSync', 'HF-SadTalker');
-  if (syncLabsOk)  configured.push('SyncLabs');   else unconfigured.push('SyncLabs');
-  if (didOk)       configured.push('D-ID');         else unconfigured.push('D-ID');
+  if (hfKeyOk) configured.push('HF-LatentSync [NOT VERIFIED]');
+  else unconfigured.push('HF-LatentSync [NOT VERIFIED]');
+  unconfigured.push('HF-SadTalker [REMOVED — HTTP 503]');
+  if (syncLabsOk)  configured.push('SyncLabs');        else unconfigured.push('SyncLabs');
+  if (didOk)       configured.push('D-ID');             else unconfigured.push('D-ID');
   if (replicateOk) configured.push('Replicate-Wav2Lip'); else unconfigured.push('Replicate-Wav2Lip');
 
-  const note = hfKeyOk
-    ? 'HF credential configured — HF-LatentSync and HF-SadTalker are the primary providers.'
-    : 'HUGGINGFACE_API_KEY not set — HF-LatentSync falls back to the public Gradio queue (slow). Configure this key for best results.';
+  const note = [
+    hfKeyOk
+      ? 'HF key configured — HF-LatentSync is first in chain (queue/join API NOT VERIFIED as of 2026-08-11).'
+      : 'HUGGINGFACE_API_KEY not set — HF-LatentSync falls back to the public Gradio queue.',
+    'HF-SadTalker removed from chain: HTTP 503 (space down).',
+    'For verified real generation, configure SYNCLABS_API_KEY, DID_API_KEY, or REPLICATE_API_TOKEN.',
+  ].join(' ');
 
   return {
     fallbackOrder: order,

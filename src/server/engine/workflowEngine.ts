@@ -209,20 +209,48 @@ export class MasterWorkflowEngine {
           console.warn('[WorkflowEngine] BGM generation threw (non-fatal):', bgmErr?.message);
         }
 
-        // ── SFX (optional) ────────────────────────────────────────────────────
-        try {
-          sfxResult = await generateSFX('transition', Math.min(duration, 3), musicTmpDir);
-          if (sfxResult) {
-            checkpoint.sfxLocalPath = sfxResult.localPath;
-            console.log(`[WorkflowEngine] SFX ready via ${sfxResult.providerUsed}`);
+        // ── Per-scene SFX (optional — tied to transitionEffect of each scene) ───
+        const scenes = checkpoint.scenes || [];
+        const sceneSfxMap: Record<number, string> = {};
+        let sfxCount = 0;
+
+        // Generate SFX for each scene that has a non-'none' sfxType.
+        // We skip the LAST scene (no outgoing transition).
+        for (let sceneIdx = 0; sceneIdx < scenes.length - 1; sceneIdx++) {
+          const scene = scenes[sceneIdx];
+          const sfxType = scene.sfxType;
+          if (!sfxType || sfxType === 'none') continue;
+          try {
+            sfxResult = await generateSFX(sfxType, 1.5, musicTmpDir);
+            if (sfxResult) {
+              sceneSfxMap[sceneIdx] = sfxResult.localPath;
+              sfxCount++;
+              console.log(`[WorkflowEngine] Scene ${sceneIdx + 1} SFX (${sfxType}) via ${sfxResult.providerUsed}`);
+            }
+          } catch (sfxErr: any) {
+            console.warn(`[WorkflowEngine] Scene ${sceneIdx + 1} SFX failed (non-fatal):`, sfxErr?.message);
           }
-        } catch (sfxErr: any) {
-          console.warn('[WorkflowEngine] SFX generation threw (non-fatal):', sfxErr?.message);
+        }
+
+        // Legacy single-SFX path: if no per-scene SFX generated, try a global one
+        if (sfxCount === 0) {
+          try {
+            sfxResult = await generateSFX('transition', Math.min(duration, 3), musicTmpDir);
+            if (sfxResult) {
+              checkpoint.sfxLocalPath = sfxResult.localPath;
+              sfxCount = 1;
+              console.log(`[WorkflowEngine] Global SFX (fallback) via ${sfxResult.providerUsed}`);
+            }
+          } catch (sfxErr: any) {
+            console.warn('[WorkflowEngine] Global SFX generation threw (non-fatal):', sfxErr?.message);
+          }
+        } else {
+          checkpoint.sceneSfxMap = sceneSfxMap;
         }
 
         const detail = [
           bgmResult ? `BGM: ${bgmResult.providerUsed}` : 'BGM: sine-wave fallback (videoComposer)',
-          sfxResult ? `SFX: ${sfxResult.providerUsed}` : 'SFX: skipped'
+          sfxCount > 0 ? `SFX: ${sfxCount} scene clip(s) via ${sfxResult?.providerUsed ?? 'mixed'}` : 'SFX: skipped'
         ].join(' | ');
         updateStage('music_generation', 'Music & Background Audio Generation', 75, 'completed', detail);
       }
@@ -296,6 +324,9 @@ export class MasterWorkflowEngine {
         }
         if (checkpoint.sfxLocalPath) {
           timelinePackage.sfxLocalPath = checkpoint.sfxLocalPath;
+        }
+        if (checkpoint.sceneSfxMap && Object.keys(checkpoint.sceneSfxMap).length > 0) {
+          timelinePackage.sceneSfxMap = checkpoint.sceneSfxMap;
         }
         checkpoint.timelinePackage = timelinePackage;
         updateStage('timeline_builder', 'Unified Timeline Package Builder', 90, 'completed', 'Timeline package assembled successfully.');

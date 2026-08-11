@@ -12,6 +12,19 @@ const EFFECTS: GranularSceneSpec['visualEffect'][] = [
   'cinematic_color_grade', 'neon_glow', 'particle_dust', 'lens_flare', 'vignette'
 ];
 
+/**
+ * Maps each transitionEffect to an appropriate SFX type.
+ * 'none' means no SFX is played at that transition.
+ */
+const TRANSITION_SFX_MAP: Record<GranularSceneSpec['transitionEffect'], GranularSceneSpec['sfxType']> = {
+  'fast_wipe':     'whoosh',
+  'glitch_slide':  'impact',
+  'zoom_burst':    'pop',
+  'cross_dissolve':'transition',
+  'fade_to_black': 'none',
+  'none':          'none',
+};
+
 export async function generateGranularScenes(
   prompt: string,
   scriptText: string,
@@ -98,7 +111,8 @@ Each scene object:
           visualEffect: validateList(s.visualEffect, EFFECTS, EFFECTS[idx % EFFECTS.length]),
           subtitleStartTime: startTime,
           subtitleEndTime: endTime,
-          musicMood: intelligence.suggestedMusicMood
+          musicMood: intelligence.suggestedMusicMood,
+          sfxType: TRANSITION_SFX_MAP[validateList(s.transitionEffect, TRANSITIONS, TRANSITIONS[idx % TRANSITIONS.length])]
         };
       });
     } catch (err) {
@@ -129,7 +143,8 @@ Each scene object:
       visualEffect: EFFECTS[idx % EFFECTS.length],
       subtitleStartTime: startTime,
       subtitleEndTime: endTime,
-      musicMood: intelligence.suggestedMusicMood
+      musicMood: intelligence.suggestedMusicMood,
+      sfxType: TRANSITION_SFX_MAP[TRANSITIONS[idx % TRANSITIONS.length]]
     });
   }
 

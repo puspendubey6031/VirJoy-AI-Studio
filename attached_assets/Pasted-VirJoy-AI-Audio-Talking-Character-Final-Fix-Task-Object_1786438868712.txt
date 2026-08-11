@@ -1,0 +1,227 @@
+VirJoy AI — Audio & Talking Character Final Fix
+
+Task Objective
+
+The current audio pipeline has already passed all 10/10 tests, lint, and build successfully.
+
+Now complete the remaining audio and Talking Character tasks and perform the final end-to-end integration.
+
+Do not rewrite or unnecessarily change working parts of the existing system. Preserve the current architecture, fallback logic, and successful tests unless a change is required to complete the tasks below.
+
+---
+
+1. Repair Local Audio Files
+
+Current location:
+
+"public/audio/*.mp3"
+
+The existing local audio files are corrupt/invalid, causing the "local-mood-file" provider to be skipped.
+
+Requirements
+
+- Audit every audio file inside "public/audio/".
+- Identify zero-byte, corrupt, invalid, or unsupported audio files.
+- Replace invalid files with valid audio assets where appropriate.
+- Validate every audio file using FFmpeg.
+- Validation must check:
+  - File exists
+  - File size > 0
+  - Valid audio stream exists
+  - Channels > 0
+  - Sample rate > 0
+  - Duration > 0
+- Ensure the "local-mood-file" provider can successfully use valid files.
+- Invalid local files must never crash the video pipeline.
+- If a local provider fails, automatically continue to the next BGM provider.
+
+---
+
+2. Fix HF Talking Character
+
+The current Talking Character implementation contains unavailable or dead Hugging Face endpoints/Spaces.
+
+Known issues include:
+
+- HTTP 404
+- HTTP 503
+- Unavailable/dead Spaces
+
+Requirements
+
+- Search the existing codebase for every Hugging Face Talking Character endpoint or Space currently being used.
+- Test each endpoint independently.
+- Identify which endpoints are actually unavailable.
+- Remove or replace dead endpoints where a reliable compatible alternative exists.
+- Do not invent fake endpoints.
+- Do not use fake API responses.
+- If a replacement requires a new API key or credential, clearly report it instead of inventing credentials.
+- Preserve the existing application architecture.
+- Handle HF endpoint failures gracefully.
+- Talking Character failure must not unnecessarily crash the normal video-generation pipeline.
+- If no reliable replacement can be verified in the current environment, mark the task as "BLOCKED" or "NOT VERIFIED" rather than pretending it works.
+
+---
+
+3. Integrate SFX with Scene Transitions
+
+The SFX provider system is already implemented and tested.
+
+Current SFX fallback chain:
+
+1. "ffmpeg-envelope-sfx"
+2. "ffmpeg-harmonic-sfx"
+3. "ffmpeg-sine-sfx"
+
+The remaining task is to connect SFX generation to the actual video scene-transition system.
+
+Requirements
+
+- Locate the existing scene metadata, scene-generation, or transition system.
+- Connect the existing SFX provider chain to scene transitions.
+- SFX must be triggered according to actual scene/transition metadata.
+- Support at least:
+  - Whoosh
+  - Click
+  - Impact
+  - Transition
+  - Pop
+  - Soft notification
+
+Important Behaviour
+
+- If the user's prompt explicitly specifies an SFX, that instruction has priority.
+- Do not automatically invent unnecessary creative sound effects.
+- SFX must remain optional.
+- SFX failure must never stop video generation.
+- Use the existing SFX fallback chain.
+- Avoid duplicate or unnecessary SFX.
+- Place SFX accurately on the video timeline.
+- Keep SFX volume controlled.
+- SFX must not overpower voice-over.
+- Scene transitions without a suitable SFX must continue normally without failing.
+
+---
+
+4. Final Audio Mixing
+
+The final audio pipeline must support:
+
+"Voice + BGM + Scene SFX"
+
+Requirements
+
+- Correctly mix voice, BGM, and SFX.
+- Produce stereo output.
+- Validate the final sample rate.
+- Produce AAC-compatible final audio.
+- Keep voice-over clearly intelligible.
+- Automatically reduce/duck BGM when voice-over is present.
+- Keep SFX short and controlled.
+- Prevent clipping and distortion.
+- Preserve the correct final video duration.
+- Missing BGM must not fail the pipeline.
+- Missing SFX must not fail the pipeline.
+- Missing voice must not unnecessarily fail optional audio processing.
+
+---
+
+5. Validation and Testing
+
+After implementation, run all existing tests plus the new integration tests.
+
+Verify all of the following:
+
+- Valid local audio → PASS
+- Corrupt local audio → fallback
+- Zero-byte audio → fallback
+- Invalid sample rate → rejected
+- BGM primary provider failure → fallback
+- Secondary BGM provider failure → fallback
+- Local BGM provider failure → harmonic fallback
+- SFX primary provider failure → next provider
+- SFX secondary provider failure → final provider
+- All SFX providers unavailable → video still succeeds
+- Scene transition → correct SFX trigger
+- Explicit user-requested SFX → correctly respected
+- Voice + BGM + SFX → valid MP4
+- Talking Character endpoint → successful response OR graceful verified fallback
+- Optional audio failures → pipeline continues
+- No unnecessary API credentials required
+- No fake/mock success responses
+
+---
+
+6. End-to-End Sample Video
+
+Generate at least one complete sample video using the actual production pipeline.
+
+Verify the final MP4:
+
+- Plays correctly
+- Has the correct duration
+- Contains valid stereo audio
+- Contains voice-over when requested
+- Contains BGM when available
+- Contains SFX at appropriate scene transitions
+- Has no obvious audio clipping
+- Has no corrupted audio
+- Has no broken video output
+
+---
+
+7. Final Verification Commands
+
+Run, in the appropriate order:
+
+1. Lint
+2. Build
+3. Existing test suite
+4. New audio integration tests
+5. Talking Character tests
+6. End-to-end video generation
+7. Final MP4/audio validation
+
+Do not report success until the corresponding test or verification has actually been executed.
+
+---
+
+8. Required Final Report
+
+Return the final report using exactly this structure:
+
+Implementation Status: PASS / PARTIAL / BLOCKED
+
+Local Audio: PASS / FAIL
+
+HF Talking Character: PASS / FAIL / BLOCKED / NOT VERIFIED
+
+Scene Transition SFX: PASS / FAIL
+
+Audio Mixing: PASS / FAIL
+
+Tests: X/X PASS
+
+Lint: PASS / FAIL
+
+Build: PASS / FAIL
+
+Sample Video: PASS / FAIL
+
+New Credentials Required: YES / NO
+
+Remaining Blockers: None / List
+
+Files Changed: Complete file list
+
+Important Notes: Brief summary of any limitations, fallbacks, or items that could not be verified.
+
+Critical Rule
+
+Do not fake, mock, simulate, or claim successful verification for any feature that was not actually tested.
+
+If something cannot be verified in the current environment, explicitly report:
+
+"BLOCKED" or "NOT VERIFIED"
+
+Do not claim production readiness until the relevant functionality has been genuinely tested.

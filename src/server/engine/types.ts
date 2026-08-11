@@ -44,6 +44,12 @@ export interface GranularSceneSpec {
   musicMood: string;
   assignedAssetUrl?: string;
   assignedAssetSource?: 'user_upload' | 'ai_generated' | 'pexels' | 'pixabay' | 'unsplash' | 'cached';
+  /**
+   * SFX sound type to play at the END of this scene (at the transition point).
+   * Derived from transitionEffect by the scene generator; can be overridden by user prompt.
+   * 'none' means no SFX for this transition.
+   */
+  sfxType?: 'whoosh' | 'click' | 'impact' | 'transition' | 'pop' | 'notification' | 'none';
 }
 
 export interface MediaAssetSpec {
@@ -115,8 +121,14 @@ export interface TimelinePackage {
   /**
    * Absolute local path of a pre-validated SFX file (set by music_generation stage).
    * Optional — absent when SFX generation failed or was skipped.
+   * @deprecated Use sceneSfxMap for per-scene placement.
    */
   sfxLocalPath?: string;
+  /**
+   * Per-scene SFX file paths (0-based scene index → absolute local path).
+   * Each entry is a pre-validated SFX clip to be played at that scene's transition point.
+   */
+  sceneSfxMap?: Record<number, string>;
 }
 
 export interface RenderInstructionPackage {
@@ -161,6 +173,11 @@ export interface EngineCheckpoint {
   bgmLocalPath?: string;
   /** Absolute local path of pre-validated SFX file (set by music_generation stage; optional) */
   sfxLocalPath?: string;
+  /**
+   * Per-scene SFX paths generated during music_generation stage.
+   * Key = 0-based scene index; value = absolute local path of validated SFX clip.
+   */
+  sceneSfxMap?: Record<number, string>;
   subtitleSpec?: SubtitleEngineSpec;
   timelinePackage?: TimelinePackage;
   renderPackage?: RenderInstructionPackage;

@@ -593,8 +593,8 @@ export function getMusicProviderStatus(): MusicProviderStatus {
     const p = path.join(audioDir, file);
     const exists = fs.existsSync(p) && fs.statSync(p).size > 0;
     localFilesAvailable[mood] = exists;
-    // Quick sync check: size > 1MB assumed potentially valid (full validation is async)
-    localFilesValid[mood] = exists && fs.statSync(p).size > 1_000_000;
+    // Quick sync check: size > 10KB assumed potentially valid (full async validation via validateAudioFile)
+    localFilesValid[mood] = exists && fs.statSync(p).size > 10_000;
   }
 
   let ffmpegAvailable = false;

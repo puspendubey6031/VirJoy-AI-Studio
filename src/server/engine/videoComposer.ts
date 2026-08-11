@@ -246,32 +246,40 @@ export class VideoComposer {
       } catch (_) {}
 
       if (tcHasAudio) {
-        // Mix the clip's embedded audio (lip-synced voice) with background music
+        // Clip has lip-synced voice embedded — duck BGM against it
+        // [0:a]=voice (sidechain), [1:a]=BGM (signal to duck)
         ffmpegCommand = [
           `ffmpeg -y`,
           `-i "${tcPath}"`,
           `-i "${musicLocalPath}"`,
           `-filter_complex`,
-          `"[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[vout];[0:a][1:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]"`,
+          `"[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[vout];` +
+          `[0:a]asplit=2[voice_out][voice_sc];` +
+          `[1:a][voice_sc]sidechaincompress=threshold=0.01:ratio=8:attack=100:release=600:level_in=0.4[bgm_ducked];` +
+          `[voice_out][bgm_ducked]amix=inputs=2:normalize=0:duration=first:weights=1.0 1.0[aout]"`,
           `-map "[vout]"`,
           `-map "[aout]"`,
           `-c:v libx264 -preset ultrafast -pix_fmt yuv420p`,
-          `-c:a aac -b:a 192k -movflags +faststart -shortest`,
+          `-c:a aac -b:a 192k -ar 44100 -movflags +faststart -shortest`,
           `"${outputFilePath}"`
         ].join(' ');
       } else {
-        // Clip has no audio — use the voice track from the standard pipeline + music
+        // Clip has no audio — use the voice track from the standard pipeline, duck BGM against it
+        // [1:a]=voice (sidechain), [2:a]=BGM (signal to duck)
         ffmpegCommand = [
           `ffmpeg -y`,
           `-i "${tcPath}"`,
           `-i "${voiceLocalPath}"`,
           `-i "${musicLocalPath}"`,
           `-filter_complex`,
-          `"[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[vout];[1:a][2:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]"`,
+          `"[0:v]scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1[vout];` +
+          `[1:a]asplit=2[voice_out][voice_sc];` +
+          `[2:a][voice_sc]sidechaincompress=threshold=0.01:ratio=8:attack=100:release=600:level_in=0.4[bgm_ducked];` +
+          `[voice_out][bgm_ducked]amix=inputs=2:normalize=0:duration=first:weights=1.0 1.0[aout]"`,
           `-map "[vout]"`,
           `-map "[aout]"`,
           `-c:v libx264 -preset ultrafast -pix_fmt yuv420p`,
-          `-c:a aac -b:a 192k -movflags +faststart -shortest`,
+          `-c:a aac -b:a 192k -ar 44100 -movflags +faststart -shortest`,
           `"${outputFilePath}"`
         ].join(' ');
       }
@@ -290,11 +298,16 @@ export class VideoComposer {
 
       const voiceIndex = downloadedImages.length;
       const musicIndex = downloadedImages.length + 1;
-      const audioMixFilter = `[${voiceIndex}:a][${musicIndex}:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]`;
 
-      const filterComplex = `"${scalePadFilters}${concatFilter}${audioMixFilter}"`;
+      // Build audio filter: BGM ducking + per-scene SFX at transition timestamps
+      const { filterFragment, sfxInputPaths } = this.buildSlideshowAudioFilter(
+        voiceIndex, musicIndex, timeline
+      );
 
-      ffmpegCommand = `ffmpeg -y ${inputs} -i "${voiceLocalPath}" -i "${musicLocalPath}" -filter_complex ${filterComplex} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -movflags +faststart -shortest "${outputFilePath}"`;
+      const sfxInputStr = sfxInputPaths.map(p => `-i "${p}"`).join(' ');
+      const filterComplex = `"${scalePadFilters}${concatFilter}${filterFragment}"`;
+
+      ffmpegCommand = `ffmpeg -y ${inputs} -i "${voiceLocalPath}" -i "${musicLocalPath}" ${sfxInputStr} -filter_complex ${filterComplex} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -movflags +faststart -shortest "${outputFilePath}"`;
     }
 
     // 5. Execute FFmpeg Command (50 MB stderr buffer; 120 s hard timeout)
@@ -330,6 +343,74 @@ export class VideoComposer {
       durationMs,
       fileSizeBytes: stats.size
     };
+  }
+
+  /**
+   * Build the audio filter_complex fragment for standard slideshow mode.
+   *
+   * Features:
+   *  • BGM ducking via sidechaincompress: BGM volume auto-reduces when voice is loud
+   *  • Per-scene SFX with adelay: each SFX clip is delayed to its scene's transition timestamp
+   *  • Output: stereo AAC-compatible [aout]
+   *
+   * @param voiceIndex  FFmpeg input index for the voice track
+   * @param musicIndex  FFmpeg input index for the BGM track
+   * @param timeline    TimelinePackage; reads scenes + sceneSfxMap
+   * @returns filterFragment (to embed in filter_complex) + sfxInputPaths (ordered list of SFX files to add as -i)
+   */
+  private buildSlideshowAudioFilter(
+    voiceIndex: number,
+    musicIndex: number,
+    timeline: TimelinePackage
+  ): { filterFragment: string; sfxInputPaths: string[] } {
+    const sceneSfxMap = timeline.sceneSfxMap || {};
+    const scenes = timeline.scenes || [];
+
+    // Collect valid SFX entries in scene order.
+    // Skip the last scene — it has no outgoing transition to play SFX at.
+    type SfxEntry = { localPath: string; delayMs: number; label: string };
+    const sfxEntries: SfxEntry[] = [];
+    let cumulativeMs = 0;
+
+    for (let sceneIdx = 0; sceneIdx < scenes.length - 1; sceneIdx++) {
+      cumulativeMs += Math.round(scenes[sceneIdx].durationSeconds * 1000);
+      const p = sceneSfxMap[sceneIdx];
+      if (p && fs.existsSync(p)) {
+        sfxEntries.push({
+          localPath: p,
+          delayMs: Math.max(0, cumulativeMs - 150), // 150ms early so SFX overlaps the cut
+          label: `sfx_s${sceneIdx}`
+        });
+      }
+    }
+
+    const sfxInputPaths = sfxEntries.map(e => e.localPath);
+    const parts: string[] = [];
+
+    // Split voice so we can use it as both sidechain trigger and mix input
+    parts.push(`[${voiceIndex}:a]asplit=2[voice_out][voice_sc]`);
+
+    // BGM ducking: compresses BGM when voice sidechain is above threshold
+    parts.push(
+      `[${musicIndex}:a][voice_sc]sidechaincompress=` +
+      `threshold=0.01:ratio=8:attack=100:release=600:level_in=0.4[bgm_ducked]`
+    );
+
+    // Per-scene SFX: delay each clip to its scene's transition timestamp
+    sfxEntries.forEach((e, i) => {
+      const inputIdx = musicIndex + 1 + i;
+      parts.push(`[${inputIdx}:a]adelay=${e.delayMs}|${e.delayMs}[${e.label}]`);
+    });
+
+    // Final mix: voice (1.0) + BGM ducked (1.0) + SFX clips (0.30 each)
+    const mixInputs = ['[voice_out]', '[bgm_ducked]', ...sfxEntries.map(e => `[${e.label}]`)];
+    const sfxWeightStr = sfxEntries.map(() => ' 0.30').join('');
+    const weights = `1.0 1.0${sfxWeightStr}`;
+    parts.push(
+      `${mixInputs.join('')}amix=inputs=${mixInputs.length}:normalize=0:duration=first:weights=${weights}[aout]`
+    );
+
+    return { filterFragment: parts.join(';'), sfxInputPaths };
   }
 
   /**
