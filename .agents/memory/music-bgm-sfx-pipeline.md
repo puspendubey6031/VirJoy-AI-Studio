@@ -13,21 +13,26 @@ description: How music, background music, and sound effects are generated and wi
 | `src/server/engine/videoComposer.ts` | Fast-path: uses `timeline.bgmLocalPath` directly when present |
 | `src/server/providers/index.ts` | Re-exports musicProvider; adds `music: MusicProviderStatus` to ProviderStatusReport |
 
-## BGM chain
-1. Local mood-mapped MP3 (`public/audio/*.mp3`) — validated with ffprobe before use
-2. ffmpeg sine-wave fallback — always available
+## BGM chain (4 providers)
+1. **free-music-url:soundhelix** — SoundHelix royalty-free CDN (HTTP 200 confirmed, ~8.9MB/2.5s)
+2. **free-music-url:secondary**  — Fallback CDN (SoundHelix alternate tracks / Archive.org)
+3. **local-mood-file**           — `public/audio/*.mp3` — validated with ffprobe; currently CORRUPT (channels=0), correctly rejected
+4. **ffmpeg-harmonic**           — Multi-harmonic multi-tone synthesis; guaranteed always works
 
-**Important:** The 5 local MP3 files in `public/audio/` are currently corrupt (ffprobe: `channels=0`, "Header missing"). They are correctly rejected by `validateAudioFile`. Sine-wave is the effective primary BGM source until the local files are replaced with valid ones.
+**Important:** The 5 local MP3 files in `public/audio/` have `channels=0` ("Header missing" from ffprobe) — corrupt. They are correctly rejected. Replace them with valid MP3s to enable provider 3.
 
-## SFX chain
-1. ffmpeg tone synthesis (always available, no external calls)
-   - Supported types: whoosh, click, notification, transition, success, error, ambient, default
-   - Uses frequency + fade-in/out envelope
+## SFX chain (3 providers)
+1. **ffmpeg-envelope-sfx** — ADSR-enveloped multi-harmonic (most realistic)
+2. **ffmpeg-harmonic-sfx** — harmonic blend without full ADSR
+3. **ffmpeg-sine-sfx**     — pure sine guaranteed fallback
 
-## validateAudioFile behavior
-- Rejects: missing, zero-byte, zero-channel, zero-duration, or parse-fail files
-- MP3 files: must query both stream.duration AND format.duration (use `-show_entries stream=channels,duration:format=duration`)
+Supported types: whoosh, click, notification, transition, success, error, ambient, default
+
+## validateAudioFile behavior (enhanced)
+- Checks: exists · size > 0 · channels > 0 · **sampleRate > 0** · duration > 0
+- MP3 files: query both stream.duration AND format.duration: `-show_entries stream=channels,sample_rate,duration:format=duration`
 - Never throws — returns { valid: false, error } on failure
+- MusicResult now carries: localPath, providerUsed, durationSeconds, fileSizeBytes, **sampleRate**, **channels**
 
 ## WorkflowEngine stage
 - Stage: `music_generation` (between voice_generation and talking_character)

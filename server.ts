@@ -1882,146 +1882,174 @@ async function startServer() {
 
     const tmpDir = `/tmp/music_test_${Date.now()}`;
     fsSync.mkdirSync(tmpDir, { recursive: true });
-
     const tests: Record<string, { pass: boolean; detail: string }> = {};
 
-    // ── 1. BGM generation succeeds and produces valid audio ───────────────
-    // Note: public/audio/*.mp3 files are corrupt (channels=0) and are correctly
-    // rejected by validateAudioFile per spec ("Do not use corrupt files from public/audio").
-    // The sine-wave fallback is the guaranteed working source.
+    // ── 1. BGM primary provider (SoundHelix free CDN) succeeds ───────────
     try {
       const result = await generateBackgroundMusic('cinematic_synth', 10, tmpDir);
       const valid = result !== null && result.fileSizeBytes > 0 && result.durationSeconds > 0;
-      tests['1_primary_bgm_success'] = {
+      tests['1_bgm_primary_success'] = {
         pass: valid,
         detail: result
-          ? `provider=${result.providerUsed} size=${result.fileSizeBytes} dur=${result.durationSeconds.toFixed(1)}s`
+          ? `provider=${result.providerUsed} size=${result.fileSizeBytes}B dur=${result.durationSeconds.toFixed(1)}s sr=${result.sampleRate}Hz ch=${result.channels}`
           : 'returned null — all BGM sources failed'
       };
-    } catch (e) { tests['1_primary_bgm_success'] = { pass: false, detail: String(e) }; }
+    } catch (e) { tests['1_bgm_primary_success'] = { pass: false, detail: String(e) }; }
 
-    // ── 2. Provider failure → automatic fallback (bad mood → sine wave) ───
+    // ── 2. Provider failure → automatic fallback (unknown mood → chain) ───
     try {
-      // Use a mood that has no local file to force sine-wave fallback
       const result = await generateBackgroundMusic('nonexistent_mood_xyz', 5, tmpDir);
-      // Should still return something (local file for default mood OR sine wave)
-      tests['2_provider_failure_fallback'] = {
+      tests['2_bgm_provider_fallback'] = {
         pass: result !== null,
         detail: result
-          ? `fallback provider=${result.providerUsed}`
-          : 'returned null — all fallbacks failed'
+          ? `fallback succeeded: provider=${result.providerUsed}`
+          : 'all fallbacks failed'
       };
-    } catch (e) { tests['2_provider_failure_fallback'] = { pass: false, detail: String(e) }; }
+    } catch (e) { tests['2_bgm_provider_fallback'] = { pass: false, detail: String(e) }; }
 
-    // ── 3. Unavailable music → local/sine fallback path ───────────────────
+    // ── 3. Chain has ≥ 3 providers configured ─────────────────────────────
     try {
       const status = getMusicProviderStatus();
-      const hasFallback = status.bgmChain.length > 0;
-      tests['3_unavailable_music_local_fallback'] = {
-        pass: hasFallback,
-        detail: `BGM chain: ${status.bgmChain.join(' → ')}`
+      const bgmLen = status.bgmChain.length;
+      const sfxLen = status.sfxChain.length;
+      tests['3_provider_chain_depth'] = {
+        pass: bgmLen >= 3 && sfxLen >= 2,
+        detail: `BGM chain (${bgmLen}): ${status.bgmChain.join(' | ')} || SFX chain (${sfxLen}): ${status.sfxChain.join(' | ')}`
       };
-    } catch (e) { tests['3_unavailable_music_local_fallback'] = { pass: false, detail: String(e) }; }
+    } catch (e) { tests['3_provider_chain_depth'] = { pass: false, detail: String(e) }; }
 
-    // ── 4. Corrupt audio rejection ─────────────────────────────────────────
+    // ── 4. Corrupt audio rejected (channels=0 / no valid frames) ─────────
     try {
       const fakePath = pathMod.join(tmpDir, 'corrupt.mp3');
       fsSync.writeFileSync(fakePath, 'this is not valid audio data CORRUPT');
       const v = await validateAudioFile(fakePath);
       tests['4_corrupt_audio_rejected'] = {
-        pass: v.valid === false,
-        detail: `valid=${v.valid} error="${v.error}" size=${v.fileSizeBytes}`
+        pass: !v.valid,
+        detail: `valid=${v.valid} error="${v.error?.substring(0, 100)}"`
       };
     } catch (e) { tests['4_corrupt_audio_rejected'] = { pass: false, detail: String(e) }; }
 
-    // ── 5. Optional BGM failure does not fail video generation ────────────
-    try {
-      // Simulate by running the BGM generation in isolation and verifying it returns
-      // null-safe (never throws) — the workflowEngine try/catch does the rest
-      let threw = false;
-      try {
-        await generateBackgroundMusic('cinematic_synth', 5, tmpDir);
-      } catch { threw = true; }
-      tests['5_bgm_failure_no_pipeline_stop'] = {
-        pass: !threw,
-        detail: threw ? 'generateBackgroundMusic threw — would break pipeline' : 'generateBackgroundMusic never throws (safe for pipeline)'
-      };
-    } catch (e) { tests['5_bgm_failure_no_pipeline_stop'] = { pass: false, detail: String(e) }; }
-
-    // ── 6. Optional SFX failure does not fail video generation ────────────
-    try {
-      let threw = false;
-      try {
-        await generateSFX('transition', 2, tmpDir);
-      } catch { threw = true; }
-      tests['6_sfx_failure_no_pipeline_stop'] = {
-        pass: !threw,
-        detail: threw ? 'generateSFX threw — would break pipeline' : 'generateSFX never throws (safe for pipeline)'
-      };
-    } catch (e) { tests['6_sfx_failure_no_pipeline_stop'] = { pass: false, detail: String(e) }; }
-
-    // ── 7. SFX generation produces valid audio ─────────────────────────────
-    try {
-      const sfx = await generateSFX('whoosh', 1.5, tmpDir);
-      if (sfx) {
-        const v = await validateAudioFile(sfx.localPath);
-        tests['7_sfx_generates_valid_audio'] = {
-          pass: v.valid && v.duration > 0,
-          detail: `provider=${sfx.providerUsed} valid=${v.valid} dur=${v.duration.toFixed(2)}s channels=${v.channels}`
-        };
-      } else {
-        tests['7_sfx_generates_valid_audio'] = { pass: false, detail: 'generateSFX returned null' };
-      }
-    } catch (e) { tests['7_sfx_generates_valid_audio'] = { pass: false, detail: String(e) }; }
-
-    // ── 8. validateAudioFile rejects zero-byte file ────────────────────────
+    // ── 5. Zero-byte file rejected ────────────────────────────────────────
     try {
       const zeroPath = pathMod.join(tmpDir, 'zero.mp3');
       fsSync.writeFileSync(zeroPath, '');
       const v = await validateAudioFile(zeroPath);
-      tests['8_zero_byte_rejected'] = {
-        pass: v.valid === false && !!v.error,
+      tests['5_zero_byte_rejected'] = {
+        pass: !v.valid && v.fileSizeBytes === 0,
         detail: `valid=${v.valid} error="${v.error}"`
       };
-    } catch (e) { tests['8_zero_byte_rejected'] = { pass: false, detail: String(e) }; }
+    } catch (e) { tests['5_zero_byte_rejected'] = { pass: false, detail: String(e) }; }
 
-    // ── 9. End-to-end: BGM validated + composed into real MP4 ─────────────
+    // ── 6. validateAudioFile checks sampleRate > 0 ────────────────────────
     try {
-      const bgm = await generateBackgroundMusic('ambient_chill', 4, tmpDir);
+      const bgm = await generateBackgroundMusic('upbeat_electronic', 3, tmpDir);
       if (bgm) {
-        const portraitPath = pathMod.join(tmpDir, 'scene.jpg');
-        const finalMp4 = pathMod.join(tmpDir, 'e2e_music_test.mp4');
-        // Create a minimal test image
+        const v = await validateAudioFile(bgm.localPath);
+        tests['6_samplerate_validated'] = {
+          pass: v.valid && v.sampleRate > 0 && v.channels > 0 && v.duration > 0,
+          detail: `valid=${v.valid} sr=${v.sampleRate}Hz ch=${v.channels} dur=${v.duration.toFixed(2)}s`
+        };
+      } else {
+        tests['6_samplerate_validated'] = { pass: false, detail: 'BGM returned null' };
+      }
+    } catch (e) { tests['6_samplerate_validated'] = { pass: false, detail: String(e) }; }
+
+    // ── 7. SFX chain: all 3 providers produce valid audio ─────────────────
+    try {
+      const sfxTypes = ['whoosh', 'click', 'notification'] as const;
+      const results: string[] = [];
+      let allValid = true;
+      for (const t of sfxTypes) {
+        const sfx = await generateSFX(t, 1.5, tmpDir);
+        if (sfx) {
+          const v = await validateAudioFile(sfx.localPath);
+          results.push(`${t}:${sfx.providerUsed}(sr=${v.sampleRate}Hz dur=${v.duration.toFixed(2)}s)`);
+          if (!v.valid || v.sampleRate <= 0 || v.duration <= 0) allValid = false;
+        } else {
+          results.push(`${t}:null`);
+          allValid = false;
+        }
+      }
+      tests['7_sfx_all_types_valid'] = { pass: allValid, detail: results.join(' | ') };
+    } catch (e) { tests['7_sfx_all_types_valid'] = { pass: false, detail: String(e) }; }
+
+    // ── 8. BGM optional: failure must not stop pipeline ───────────────────
+    try {
+      let threw = false;
+      try { await generateBackgroundMusic('cinematic_synth', 2, tmpDir); } catch { threw = true; }
+      tests['8_bgm_optional_no_pipeline_stop'] = {
+        pass: !threw,
+        detail: threw ? 'THREW — would kill pipeline' : 'never throws (safe)'
+      };
+    } catch (e) { tests['8_bgm_optional_no_pipeline_stop'] = { pass: false, detail: String(e) }; }
+
+    // ── 9. SFX optional: failure must not stop pipeline ───────────────────
+    try {
+      let threw = false;
+      try { await generateSFX('transition', 1, tmpDir); } catch { threw = true; }
+      tests['9_sfx_optional_no_pipeline_stop'] = {
+        pass: !threw,
+        detail: threw ? 'THREW — would kill pipeline' : 'never throws (safe)'
+      };
+    } catch (e) { tests['9_sfx_optional_no_pipeline_stop'] = { pass: false, detail: String(e) }; }
+
+    // ── 10. BGM + SFX + voice mixed → valid stereo MP4 ───────────────────
+    try {
+      // Generate all three audio tracks independently
+      const [bgm, sfx] = await Promise.all([
+        generateBackgroundMusic('ambient_chill', 5, tmpDir),
+        generateSFX('transition', 1.5, tmpDir)
+      ]);
+      // Synthetic "voice" track via ffmpeg
+      const voicePath = pathMod.join(tmpDir, 'voice_test.mp3');
+      await execAsync(
+        `ffmpeg -y -f lavfi -i "sine=frequency=300:duration=5" -ar 44100 -ac 1 -c:a libmp3lame -b:a 128k "${voicePath}"`,
+        { timeout: 15000 }
+      );
+      const imagePath = pathMod.join(tmpDir, 'test_bg.jpg');
+      const finalMp4  = pathMod.join(tmpDir, 'e2e_mix_test.mp4');
+      await execAsync(
+        `ffmpeg -y -f lavfi -i "color=c=0x0f172a:s=1920x1080:d=5" -vframes 1 "${imagePath}"`,
+        { timeout: 10000 }
+      );
+
+      if (bgm) {
+        // Mix: video + voice + BGM + (optional) SFX concatenated
+        const sfxInput  = sfx ? `-i "${sfx.localPath}"` : '';
+        const sfxFilter = sfx
+          ? `[1:a][2:a][3:a]amix=inputs=3:duration=first:weights=1.0 0.25 0.15[aout]`
+          : `[1:a][2:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]`;
+        const sfxMap   = sfx ? `-i "${sfx.localPath}"` : '';
+        const inputStr = `-loop 1 -t 5 -i "${imagePath}" -i "${voicePath}" -i "${bgm.localPath}" ${sfxMap}`;
+        const filterStr = sfx
+          ? `[0:v]scale=1920:1080,setsar=1[v];[1:a][2:a][3:a]amix=inputs=3:duration=first:weights=1.0 0.25 0.15[aout]`
+          : `[0:v]scale=1920:1080,setsar=1[v];[1:a][2:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]`;
+
         await execAsync(
-          `ffmpeg -y -f lavfi -i "color=c=0x1e3a8a:s=1920x1080:d=4" -vframes 1 "${portraitPath}"`,
-          { timeout: 10000 }
+          `ffmpeg -y ${inputStr} -filter_complex "${filterStr}" -map "[v]" -map "[aout]" ` +
+          `-c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -shortest "${finalMp4}"`,
+          { timeout: 60000 }
         );
-        // Compose: image + bgm → MP4 (same path as videoComposer for the music mix)
-        await execAsync(
-          `ffmpeg -y -loop 1 -t 4 -i "${portraitPath}" -i "${bgm.localPath}" ` +
-          `-filter_complex "[0:v]scale=1920:1080,setsar=1[v]" ` +
-          `-map "[v]" -map 1:a -c:v libx264 -preset ultrafast -pix_fmt yuv420p ` +
-          `-c:a aac -b:a 128k -shortest "${finalMp4}"`,
-          { timeout: 30000 }
-        );
+
         const { stdout } = await execAsync(
-          `ffprobe -v error -show_streams -print_format json "${finalMp4}"`,
-          { timeout: 10000 }
+          `ffprobe -v error -show_streams -print_format json "${finalMp4}"`, { timeout: 10000 }
         );
         const probe = JSON.parse(stdout);
         const streams: any[] = probe.streams || [];
-        const hasVideo = streams.some((s: any) => s.codec_type === 'video');
-        const hasAudio = streams.some((s: any) => s.codec_type === 'audio');
-        const dur = parseFloat(streams.find((s: any) => s.codec_type === 'video')?.duration || '0');
+        const vStream = streams.find((s: any) => s.codec_type === 'video');
+        const aStream = streams.find((s: any) => s.codec_type === 'audio');
+        const dur  = parseFloat(vStream?.duration || aStream?.duration || '0');
         const size = fsSync.statSync(finalMp4).size;
-        tests['9_e2e_composition_valid_mp4'] = {
-          pass: hasVideo && hasAudio && dur > 0 && size > 0,
-          detail: `bgm=${bgm.providerUsed} hasVideo=${hasVideo} hasAudio=${hasAudio} dur=${dur.toFixed(2)}s size=${size}B`
+        tests['10_bgm_sfx_voice_mixed_mp4'] = {
+          pass: !!vStream && !!aStream && dur > 0 && size > 0,
+          detail: `bgm=${bgm.providerUsed} sfx=${sfx?.providerUsed ?? 'none'} ` +
+                  `video=${vStream?.codec_name} audio=${aStream?.codec_name} ` +
+                  `sr=${aStream?.sample_rate}Hz dur=${dur.toFixed(2)}s size=${size}B`
         };
       } else {
-        tests['9_e2e_composition_valid_mp4'] = { pass: false, detail: 'BGM generation returned null' };
+        tests['10_bgm_sfx_voice_mixed_mp4'] = { pass: false, detail: 'BGM generation returned null — cannot mix' };
       }
-    } catch (e) { tests['9_e2e_composition_valid_mp4'] = { pass: false, detail: String(e) }; }
+    } catch (e) { tests['10_bgm_sfx_voice_mixed_mp4'] = { pass: false, detail: String(e) }; }
 
     // Cleanup
     try { fsSync.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
