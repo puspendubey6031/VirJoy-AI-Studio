@@ -92,6 +92,9 @@ export class MasterWorkflowEngine {
       updatedAt: new Date().toISOString()
     };
 
+    // Track musicTmpDir across stages so it can be cleaned up after render
+    let musicTmpDir = '';
+
     const updateStage = (
       stage: WorkflowStage,
       stageName: string,
@@ -191,7 +194,7 @@ export class MasterWorkflowEngine {
 
         const musicMood = checkpoint.scenes?.[0]?.musicMood || 'cinematic_synth';
         const duration  = checkpoint.scenes?.reduce((a, s) => a + s.durationSeconds, 0) || targetDurationSeconds;
-        const musicTmpDir = path.join(process.cwd(), `tmp_music_${jobId}_${Date.now()}`);
+        musicTmpDir = path.join(process.cwd(), `tmp_music_${jobId}_${Date.now()}`);
 
         let bgmResult: Awaited<ReturnType<typeof generateBackgroundMusic>> = null;
         let sfxResult: Awaited<ReturnType<typeof generateSFX>>            = null;
@@ -386,6 +389,13 @@ export class MasterWorkflowEngine {
       );
       checkpoint.currentStage = 'failed';
       return checkpoint;
+    } finally {
+      // Clean up music/SFX temp files created in music_generation stage.
+      // BGM was already copied into the render tmpDir by executeFFmpegRender;
+      // SFX files were read directly by FFmpeg — both are safe to delete now.
+      if (musicTmpDir) {
+        try { fs.rmSync(musicTmpDir, { recursive: true, force: true }); } catch (_) {}
+      }
     }
   }
 

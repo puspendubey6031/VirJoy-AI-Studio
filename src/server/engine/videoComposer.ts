@@ -260,7 +260,7 @@ export class VideoComposer {
           `-map "[vout]"`,
           `-map "[aout]"`,
           `-c:v libx264 -preset ultrafast -pix_fmt yuv420p`,
-          `-c:a aac -b:a 192k -ar 44100 -movflags +faststart -shortest`,
+          `-c:a aac -b:a 192k -ar 44100 -ac 2 -movflags +faststart -shortest`,
           `"${outputFilePath}"`
         ].join(' ');
       } else {
@@ -279,7 +279,7 @@ export class VideoComposer {
           `-map "[vout]"`,
           `-map "[aout]"`,
           `-c:v libx264 -preset ultrafast -pix_fmt yuv420p`,
-          `-c:a aac -b:a 192k -ar 44100 -movflags +faststart -shortest`,
+          `-c:a aac -b:a 192k -ar 44100 -ac 2 -movflags +faststart -shortest`,
           `"${outputFilePath}"`
         ].join(' ');
       }
@@ -307,7 +307,8 @@ export class VideoComposer {
       const sfxInputStr = sfxInputPaths.map(p => `-i "${p}"`).join(' ');
       const filterComplex = `"${scalePadFilters}${concatFilter}${filterFragment}"`;
 
-      ffmpegCommand = `ffmpeg -y ${inputs} -i "${voiceLocalPath}" -i "${musicLocalPath}" ${sfxInputStr} -filter_complex ${filterComplex} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -movflags +faststart -shortest "${outputFilePath}"`;
+      // -ac 2 forces stereo output regardless of input channel counts (voice fallback can be mono)
+      ffmpegCommand = `ffmpeg -y ${inputs} -i "${voiceLocalPath}" -i "${musicLocalPath}" ${sfxInputStr} -filter_complex ${filterComplex} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -ac 2 -movflags +faststart -shortest "${outputFilePath}"`;
     }
 
     // 5. Execute FFmpeg Command (50 MB stderr buffer; 120 s hard timeout)

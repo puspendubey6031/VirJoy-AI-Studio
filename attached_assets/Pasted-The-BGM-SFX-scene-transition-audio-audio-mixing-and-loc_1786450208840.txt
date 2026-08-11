@@ -1,0 +1,69 @@
+The BGM, SFX, scene-transition audio, audio mixing, and local audio tasks are COMPLETE and verified.
+
+IMPORTANT:
+Talking Character and lip-sync are NOT required for this project. Remove them from the project backlog and do not spend any further work on them.
+
+NEXT TASK:
+Perform a complete end-to-end audit of the actual VirJoy AI video-generation pipeline.
+
+Trace and verify the real production flow:
+
+User Prompt
+→ Scene Generation
+→ User Visual Inputs
+→ Product URL/Data Extraction
+→ Voice
+→ BGM
+→ Scene SFX
+→ Scene Transitions
+→ Video Composition
+→ Final MP4
+
+Do not merely inspect individual modules. Verify that the complete flow is actually connected and works together.
+
+Also verify:
+
+1. Prompt-driven generation follows the user's prompt exactly.
+2. The AI does not invent creative concepts outside the user's provided prompt, except where the existing ₹799 plan explicitly permits idea-based generation.
+3. User-uploaded/generated images and video clips work correctly.
+4. Product URL input works correctly and extracted product information reaches video generation.
+5. Video credit consumption is correct for duration and visual usage.
+6. Plan restrictions are correctly enforced.
+7. 9:16, 16:9, and 1:1 outputs work correctly.
+8. Voice + BGM + SFX + transitions are present in the actual final MP4.
+9. Final video duration and audio duration are correct.
+10. No missing assets, broken frames, black frames, corrupted output, or silent audio.
+11. Temporary/generated files are cleaned up according to the existing project architecture.
+12. Authentication, credits, generation, rendering, final output, and cleanup work as one complete user flow.
+
+Generate real end-to-end sample videos to verify the pipeline.
+
+Do not use fake/mock success responses.
+
+Run:
+- lint
+- build
+- all existing tests
+- new end-to-end tests
+- real sample video generation
+- final MP4 validation
+
+Do not modify the already-working audio pipeline unless an actual integration bug is discovered.
+
+At the end, report:
+
+Core Video Pipeline: PASS / PARTIAL / BLOCKED
+Prompt Logic: PASS / FAIL
+Visual Inputs: PASS / FAIL
+Product URL: PASS / FAIL
+Credits: PASS / FAIL
+Plan Enforcement: PASS / FAIL
+Video Ratios: PASS / FAIL
+Audio Integration: PASS / FAIL
+Final MP4: PASS / FAIL
+Cleanup: PASS / FAIL
+Tests: X/X PASS
+Lint: PASS / FAIL
+Build: PASS / FAIL
+Remaining Blockers: None / List
+Files Changed: Complete list
