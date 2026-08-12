@@ -28,7 +28,7 @@ export const IdeaToVideoModal: React.FC<IdeaToVideoModalProps> = ({
   if (!isOpen) return null;
 
   const planConfig = config.plans[currentPlan] || config.plans.Free;
-  const isEligible = planConfig.hasIdeaToVideoWorkflow;
+  const isEligible = currentPlan === '₹799' || currentPlan === 'Ultra' || (planConfig.hasIdeaToVideoWorkflow && currentPlan !== '₹399' && currentPlan !== '₹199' && currentPlan !== 'Free');
 
   const [concept, setConcept] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -37,6 +37,10 @@ export const IdeaToVideoModal: React.FC<IdeaToVideoModalProps> = ({
   const [error, setError] = useState('');
 
   const handleGenerateIdea = async () => {
+    if (!isEligible) {
+      setError('Idea-to-Video mode requires the ₹799 Premium Plan. Free, ₹199, and ₹399 plans use Complete Prompt mode only.');
+      return;
+    }
     if (!concept.trim()) return;
     setIsProcessing(true);
     setError('');
@@ -108,16 +112,16 @@ export const IdeaToVideoModal: React.FC<IdeaToVideoModalProps> = ({
 
         {/* Plan Entitlement Notice */}
         {!isEligible && (
-          <div className="mt-4 bg-amber-500/10 border border-amber-500/30 rounded-xl p-3 flex items-center justify-between gap-3 text-xs text-amber-200">
+          <div className="mt-4 bg-rose-500/10 border border-rose-500/30 rounded-xl p-3 flex items-center justify-between gap-3 text-xs text-rose-200">
             <div className="flex items-center gap-2">
-              <Zap className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>You are testing the AI Idea Assistant. Upgrade to ₹799 Ultra Plan for full priority access.</span>
+              <Zap className="w-4 h-4 text-rose-400 shrink-0" />
+              <span>Idea-to-Video Workflow is locked for {currentPlan} plan. Upgrade to the ₹799 Premium Plan to enable Idea mode. Free / ₹199 / ₹399 plans allow Complete Prompt mode only.</span>
             </div>
             <button
               onClick={onOpenPricing}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-3 py-1 rounded-lg shrink-0"
+              className="bg-purple-600 hover:bg-purple-500 text-white font-bold px-3 py-1.5 rounded-lg shrink-0 cursor-pointer"
             >
-              Upgrade Plan
+              Upgrade to ₹799
             </button>
           </div>
         )}
@@ -132,17 +136,18 @@ export const IdeaToVideoModal: React.FC<IdeaToVideoModalProps> = ({
             <textarea
               value={concept}
               onChange={(e) => setConcept(e.target.value)}
+              disabled={!isEligible}
               rows={3}
-              placeholder="e.g. A portable coffee maker for hikers, or 3 financial habits every 20-year-old should know, or why remote workers burn out."
-              className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 outline-none resize-none"
+              placeholder={isEligible ? "e.g. A portable coffee maker for hikers, or 3 financial habits every 20-year-old should know." : "Idea mode is locked on Free / ₹199 / ₹399 plans. Upgrade to ₹799 Premium Plan to use Idea Mode, or use Complete Prompt Mode."}
+              className="w-full bg-slate-950 border border-slate-800 focus:border-purple-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl p-3 text-sm text-slate-100 placeholder-slate-500 outline-none resize-none"
             />
           </div>
 
           <button
             type="button"
             onClick={handleGenerateIdea}
-            disabled={isProcessing || !concept.trim()}
-            className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
+            disabled={!isEligible || isProcessing || !concept.trim()}
+            className="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-3 rounded-xl text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
           >
             {isProcessing ? (
               <>

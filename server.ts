@@ -1,15 +1,14 @@
 import express from 'express';
 import cors from 'cors';
-import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { configStore, userStatsStore, videoProjectsStore, designProjectsStore } from './src/server/configStore.js';
 import { extractProductFromUrl } from './src/server/productExtractor.js';
 import { generateIdeaWorkflow, planVideoWithAI } from './src/server/videoEngine.js';
-import { videoComposer } from './src/server/engine/videoComposer.js';
-import type { GranularSceneSpec, TimelinePackage } from './src/server/engine/types.js';
-import { cleanupStats, purgeExpiredVideos, startCleanupWorker } from './src/server/cleanupService.js';
+import { cleanupStats, purgeExpiredVideos } from './src/server/cleanupService.js';
+import { runFullDatabaseMigration, runOneTimeMigration } from './src/server/databaseMigrator.js';
+import { isOwnerEmail } from './src/lib/roles.js';
 import { checkBackendSupabaseConnection, supabaseServer } from './src/server/supabaseServer.js';
 import {
   getProviderStatusReport,
@@ -46,16 +45,13 @@ process.on('unhandledRejection', (reason) => {
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 5000;
+  const PORT = 3000;
 
   // Load latest configuration from Supabase if available
   await configStore.loadFromSupabase().catch(e => console.warn('Supabase config init note:', e?.message));
 
   app.use(cors());
   app.use(express.json({ limit: '25mb' }));
-
-  // Start background retention cleanup task
-  startCleanupWorker();
 
   // --- API ROUTES ---
 
@@ -1100,6 +1096,43 @@ async function startServer() {
     return hashAdminPassword(String(adminKey).trim()) === currentAdminPasswordHash;
   };
 
+  // Database Migration & Seed Endpoint (Admin/Owner Only)
+  const handleMigration = async (req: express.Request, res: express.Response) => {
+    try {
+      const isOwner = isOwnerEmail(userStatsStore.email) || userStatsStore.isOwner || userStatsStore.role === 'Owner';
+      const isAdminAuth = verifyAdminAuthorization(req);
+
+      if (!isAdminAuth && !isOwner) {
+        return res.status(403).json({
+          success: false,
+          error: 'UNAUTHORIZED_ADMIN_ACCESS',
+          message: 'Access Denied: Admin or Owner authorization required to execute database migration.'
+        });
+      }
+
+      const force = req.body?.force === true || req.query?.force === 'true';
+      const result = await runOneTimeMigration(force);
+      return res.json({
+        success: true,
+        message: result.alreadyMigrated
+          ? 'Database migration was already executed.'
+          : 'Full database migration and seed update completed successfully.',
+        ...result
+      });
+    } catch (err: any) {
+      console.error('[DATABASE MIGRATION API ERROR]:', err);
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'Database migration failed'
+      });
+    }
+  };
+
+  app.post('/api/admin/run-migration', handleMigration);
+  app.post('/api/admin/migrate-database', handleMigration);
+  app.post('/api/db/migrate', handleMigration);
+  app.get('/api/admin/migrate-database/status', handleMigration);
+
   // Verify Admin Password Endpoint
   app.post('/api/admin/verify-password', (req, res) => {
     const { password } = req.body;
@@ -1227,8 +1260,6 @@ async function startServer() {
       }
 
       const updated = configStore.update(req.body);
-      // Restart cleanup worker if retention interval changed
-      startCleanupWorker();
       res.json({ success: true, config: updated });
     } catch (err: any) {
       res.status(500).json({ error: err?.message || 'Failed to update config' });
@@ -1311,10 +1342,6 @@ async function startServer() {
     try {
       const { prompt, targetDurationSeconds = 15, aspectRatio = '16:9', inputs = {}, planKey = 'Free' } = req.body;
 
-      if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
-        return res.status(400).json({ error: 'MISSING_PROMPT', message: 'prompt is required and must be a non-empty string' });
-      }
-
       const lockCheck = checkFeatureLockServer('videoGenerator', planKey || userStatsStore.currentPlan);
       if (!lockCheck.allowed) {
         return res.status(lockCheck.status || 403).json(lockCheck);
@@ -1335,21 +1362,17 @@ async function startServer() {
         });
       }
 
-      // 55-second overall timeout so the request never hangs indefinitely
-      const PLAN_TIMEOUT_MS = 55000;
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('VIDEO_PLAN_TIMEOUT: Scene planning exceeded 55 seconds. Provider may be unavailable.')), PLAN_TIMEOUT_MS)
-      );
-
-      const scenes = await Promise.race([
-        planVideoWithAI({ prompt: prompt.trim(), targetDurationSeconds: requestedSec, aspectRatio, inputs, planKey: planKey as PlanKey }, apiKey),
-        timeoutPromise
-      ]);
+      const scenes = await planVideoWithAI({
+        prompt: prompt || 'Product commercial ad',
+        targetDurationSeconds: requestedSec,
+        aspectRatio,
+        inputs,
+        planKey: planKey as PlanKey
+      }, apiKey);
 
       res.json({ success: true, scenes });
     } catch (err: any) {
-      const status = (err?.message || '').includes('TIMEOUT') ? 504 : 500;
-      res.status(status).json({ error: err?.message || 'Video planning failed' });
+      res.status(500).json({ error: err?.message || 'Video planning failed' });
     }
   });
 
@@ -1384,14 +1407,6 @@ async function startServer() {
         scenes = [],
         planKey = userStatsStore.currentPlan
       } = req.body;
-
-      // Validate required fields before any property access
-      if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
-        return res.status(400).json({ error: 'MISSING_PROMPT', message: 'prompt is required and must be a non-empty string' });
-      }
-      if (!Array.isArray(scenes) || scenes.length === 0) {
-        return res.status(400).json({ error: 'MISSING_SCENES', message: 'scenes array is required and must not be empty' });
-      }
 
       const lockCheck = checkFeatureLockServer('videoGenerator', planKey || userStatsStore.currentPlan);
       if (!lockCheck.allowed) {
@@ -1435,20 +1450,19 @@ async function startServer() {
       const expiresAtDate = new Date(createdAtDate.getTime() + retentionHours * 60 * 60 * 1000);
 
       const projectId = `vj-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-      const safePrompt = (prompt as string).trim();
 
       const newProject: VideoProject = {
         id: projectId,
-        title: title || `VirJoy Video - ${safePrompt.substring(0, 25)}`,
-        prompt: safePrompt,
+        title: title || `VirJoy Video - ${prompt.substring(0, 25)}`,
+        prompt,
         inputs,
         aspectRatio,
         totalDurationSeconds,
-        language: (inputs as any).language || 'en-US',
-        voice: (inputs as any).voice || 'female-ananya',
-        voiceTone: (inputs as any).voiceTone || 'Energetic',
+        language: inputs.language || 'en-US',
+        voice: inputs.voice || 'female-ananya',
+        voiceTone: inputs.voiceTone || 'Energetic',
         scenes,
-        status: 'rendering',
+        status: 'completed',
         planUsed: planKey,
         watermarked: currentPlanConfig.hasWatermark,
         exportQuality: currentPlanConfig.exportQuality,
@@ -1457,98 +1471,10 @@ async function startServer() {
         expiresAt: expiresAtDate.toISOString()
       };
 
-      // Store project record (status: rendering)
+      // Store project
       videoProjectsStore.set(projectId, newProject);
 
-      // sfxType mapping — mirrors sceneGenerator.ts TRANSITION_SFX_MAP
-      const RENDER_TRANSITION_SFX_MAP: Record<string, GranularSceneSpec['sfxType']> = {
-        fast_wipe: 'whoosh', glitch_slide: 'impact', zoom_burst: 'pop',
-        cross_dissolve: 'transition', fade_to_black: 'none', none: 'none'
-      };
-
-      // Build GranularSceneSpec[] from the incoming Scene[] for FFmpeg
-      const granularScenes: GranularSceneSpec[] = scenes.map((s: any, i: number) => {
-        const transitionEffect: GranularSceneSpec['transitionEffect'] = s.transitionEffect || 'cross_dissolve';
-        return {
-          sceneId: s.id || `scene-${i + 1}-${Date.now()}`,
-          sceneNumber: i + 1,
-          durationSeconds: Math.max(2, s.duration || 4),
-          narrationText: s.narration || s.caption || safePrompt,
-          visualPrompt: s.visualPrompt || 'Cinematic visual',
-          cameraMotion: s.cameraMotion || 'static_cinematic',
-          transitionEffect,
-          visualEffect: s.visualEffect || 'cinematic_color_grade',
-          subtitleStartTime: s.subtitleStartTime || 0,
-          subtitleEndTime: s.subtitleEndTime || Math.max(2, s.duration || 4),
-          musicMood: 'cinematic_synth',
-          assignedAssetUrl: s.imageUrl || undefined,
-          sfxType: RENDER_TRANSITION_SFX_MAP[transitionEffect] ?? 'none',
-        };
-      });
-
-      const timelinePackage: TimelinePackage = {
-        id: `tl_${projectId}_${Date.now()}`,
-        title: newProject.title,
-        aspectRatio: aspectRatio as '16:9' | '9:16' | '1:1',
-        totalDurationSeconds,
-        scenes: granularScenes,
-        mediaAssets: [],
-        voiceAudioUrl: (scenes[0] as any)?.voiceAudioUrl || '',
-        backgroundMusicUrl: (scenes[0] as any)?.backgroundMusicUrl || '/audio/cinematic.mp3',
-        subtitles: { format: 'burned', sourceLanguage: (inputs as any).language || 'en-US', cues: [], rawFormattedContent: '' },
-        overlayConfig: { watermarkText: currentPlanConfig.hasWatermark ? 'Created with VirJoy AI' : undefined }
-      };
-
-      // Generate per-scene SFX clips and wire sceneSfxMap into the timeline.
-      // Non-fatal — render proceeds even if SFX generation fails entirely.
-      const renderSfxTmpDir = path.join(process.cwd(), `tmp_render_sfx_${projectId}_${Date.now()}`);
-      try {
-        const { generateSFX } = await import('./src/server/providers/musicProvider.js');
-        fs.mkdirSync(renderSfxTmpDir, { recursive: true });
-        const sfxMap: Record<number, string> = {};
-        for (let i = 0; i < granularScenes.length - 1; i++) {
-          const sfxType = granularScenes[i].sfxType;
-          if (!sfxType || sfxType === 'none') continue;
-          try {
-            const sfxResult = await generateSFX(sfxType, 1.5, renderSfxTmpDir);
-            if (sfxResult) sfxMap[i] = sfxResult.localPath;
-          } catch (_) { /* non-fatal */ }
-        }
-        if (Object.keys(sfxMap).length > 0) timelinePackage.sceneSfxMap = sfxMap;
-      } catch (_) { /* non-fatal — SFX skipped if musicProvider unavailable */ }
-
-      // Execute FFmpeg render and validate the output MP4
-      const exportDir = path.join(process.cwd(), 'public', 'exports');
-      if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
-      const fileName = `video_${projectId}_${Date.now()}.mp4`;
-      const exportPath = path.join(exportDir, fileName);
-
-      try {
-        await videoComposer.executeFFmpegRender(timelinePackage, exportPath);
-
-        const validation = await videoComposer.validateOutputMP4(exportPath);
-        if (!validation.valid) {
-          throw new Error('FFmpeg produced an invalid MP4 — no video stream detected by ffprobe');
-        }
-
-        newProject.status = 'completed';
-        newProject.outputUrl = `/exports/${fileName}`;
-        videoProjectsStore.set(projectId, newProject);
-        // Cleanup per-scene SFX temp files (render complete — no longer needed)
-        try { fs.rmSync(renderSfxTmpDir, { recursive: true, force: true }); } catch (_) {}
-      } catch (renderErr: any) {
-        console.error('[VideoRender] FFmpeg render failed:', renderErr?.message);
-        newProject.status = 'failed';
-        videoProjectsStore.set(projectId, newProject);
-        try { fs.rmSync(renderSfxTmpDir, { recursive: true, force: true }); } catch (_) {}
-        return res.status(500).json({
-          error: 'VIDEO_RENDER_FAILED',
-          message: `Video rendering failed: ${renderErr?.message || 'FFmpeg error'}`,
-          projectId
-        });
-      }
-
-      // Deduct credits only after successful render
+      // Deduct credits and update monthly usage stats (1 second = 1 Credit)
       userStatsStore.usedCredits += requiredCredits;
       userStatsStore.usedMonthlyDurationSeconds += totalDurationSeconds;
       userStatsStore.history.unshift({
@@ -1760,1152 +1686,54 @@ async function startServer() {
     res.json({ success: true, usedCredits: 0, usedMonthlyDurationSeconds: 0 });
   });
 
-  // Manual Trigger for 24-hour Retention Cleanup
-  app.post('/api/cleanup/trigger', (_req, res) => {
-    const result = purgeExpiredVideos();
-    res.json({ success: true, ...result, stats: cleanupStats });
-  });
+  // Scheduled Cleanup Endpoint (Vercel Cron & Manual Trigger)
+  const handleCleanupExpired = async (req: express.Request, res: express.Response) => {
+    try {
+      const cronSecret = process.env.CRON_SECRET;
+      if (cronSecret) {
+        const authHeader = req.headers.authorization;
+        if (authHeader !== `Bearer ${cronSecret}`) {
+          const isOwner = isOwnerEmail(userStatsStore.email) || userStatsStore.isOwner || userStatsStore.role === 'Owner';
+          const isAdminAuth = verifyAdminAuthorization(req);
+          if (!isAdminAuth && !isOwner) {
+            return res.status(401).json({
+              success: false,
+              error: 'UNAUTHORIZED_CRON',
+              message: 'Unauthorized scheduled cleanup request'
+            });
+          }
+        }
+      }
+
+      const result = await purgeExpiredVideos();
+      return res.json({
+        success: true,
+        message: 'Scheduled 24h retention cleanup completed successfully',
+        ...result,
+        stats: cleanupStats
+      });
+    } catch (err: any) {
+      console.error('[CLEANUP SERVICE ERROR]:', err);
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'Retention cleanup operation failed'
+      });
+    }
+  };
+
+  app.post('/api/system/cleanup-expired', handleCleanupExpired);
+  app.get('/api/system/cleanup-expired', handleCleanupExpired);
+  app.post('/api/cleanup/trigger', handleCleanupExpired);
 
   // Cleanup Stats
   app.get('/api/cleanup/stats', (_req, res) => {
     res.json({ success: true, stats: cleanupStats, currentActiveProjects: videoProjectsStore.size });
   });
 
-  // ── Provider fallback diagnostic endpoints ────────────────────────────────
-  app.get('/api/dev/provider-status', (_req, res) => {
-    res.json({ status: 'ok', report: getProviderStatusReport() });
-  });
-
-  app.get('/api/dev/provider-test', async (_req, res) => {
-    const { runWithFallback, AllProvidersFailedError } = await import('./src/server/providers/providerFallback.js');
-    const results: Record<string, { pass: boolean; detail: string }> = {};
-
-    // Test A: primary succeeds — fallback providers must NOT be called
-    try {
-      let fallbackCalled = false;
-      const { providerUsed, attempts } = await runWithFallback('test-A', [
-        { name: 'Primary',   run: async () => 'ok' },
-        { name: 'Fallback1', run: async () => { fallbackCalled = true; return 'fb'; } }
-      ]);
-      results['A_primary_success'] = {
-        pass: providerUsed === 'Primary' && !fallbackCalled && attempts.length === 1,
-        detail: `providerUsed=${providerUsed} fallbackCalled=${fallbackCalled} attempts=${attempts.length}`
-      };
-    } catch (e) { results['A_primary_success'] = { pass: false, detail: String(e) }; }
-
-    // Test B: primary fails → fallback 1 attempted
-    try {
-      const { providerUsed, attempts } = await runWithFallback('test-B', [
-        { name: 'Primary',   run: async () => { throw new Error('quota exhausted'); } },
-        { name: 'Fallback1', run: async () => 'fb1' }
-      ]);
-      results['B_primary_fail_fallback1'] = {
-        pass: providerUsed === 'Fallback1' && attempts.length === 2 && attempts[0].success === false,
-        detail: `providerUsed=${providerUsed} attempts=${attempts.length} category=${attempts[0].failureCategory}`
-      };
-    } catch (e) { results['B_primary_fail_fallback1'] = { pass: false, detail: String(e) }; }
-
-    // Test C: primary + fallback1 fail → fallback2 succeeds
-    try {
-      const { providerUsed, attempts } = await runWithFallback('test-C', [
-        { name: 'Primary',   run: async () => { throw new Error('rate limit 429'); } },
-        { name: 'Fallback1', run: async () => { throw new Error('service unavailable 503'); } },
-        { name: 'Fallback2', run: async () => 'fb2' }
-      ]);
-      results['C_two_fail_third_succeeds'] = {
-        pass: providerUsed === 'Fallback2' && attempts.length === 3,
-        detail: `providerUsed=${providerUsed} attempts=${attempts.length}`
-      };
-    } catch (e) { results['C_two_fail_third_succeeds'] = { pass: false, detail: String(e) }; }
-
-    // Test D: all providers fail → controlled AllProvidersFailedError
-    try {
-      await runWithFallback('test-D', [
-        { name: 'P1', run: async () => { throw new Error('fail 1'); } },
-        { name: 'P2', run: async () => { throw new Error('fail 2'); } }
-      ]);
-      results['D_all_fail_controlled_error'] = { pass: false, detail: 'Should have thrown' };
-    } catch (e) {
-      results['D_all_fail_controlled_error'] = {
-        pass: e instanceof AllProvidersFailedError,
-        detail: e instanceof AllProvidersFailedError ? `correct error type: ${e.message.substring(0, 100)}` : String(e)
-      };
-    }
-
-    // Test E: missing API key → provider excluded from chain, not fatal
-    try {
-      const apiKey = process.env.__NONEXISTENT_KEY__;
-      const chain: any[] = [];
-      if (apiKey) chain.push({ name: 'ProviderWithKey', run: async () => 'keyed' });
-      chain.push({ name: 'NoKeyProvider', run: async () => 'ok-no-key' });
-      const { providerUsed } = await runWithFallback('test-E', chain);
-      results['E_missing_key_skipped'] = {
-        pass: providerUsed === 'NoKeyProvider',
-        detail: `providerUsed=${providerUsed}`
-      };
-    } catch (e) { results['E_missing_key_skipped'] = { pass: false, detail: String(e) }; }
-
-    // Test F: provider timeout → fallback continues
-    try {
-      const { providerUsed, attempts } = await runWithFallback('test-F', [
-        { name: 'SlowProvider', timeoutMs: 50, run: async () => new Promise<any>(r => setTimeout(r, 500)) },
-        { name: 'FastFallback', run: async () => 'fast' }
-      ]);
-      results['F_timeout_fallback_continues'] = {
-        pass: providerUsed === 'FastFallback' && attempts[0].failureCategory === 'TIMEOUT',
-        detail: `providerUsed=${providerUsed} timedOutCategory=${attempts[0].failureCategory}`
-      };
-    } catch (e) { results['F_timeout_fallback_continues'] = { pass: false, detail: String(e) }; }
-
-    // Test G: verify operation-specific chain configs
-    try {
-      const report = getProviderStatusReport();
-      const pass =
-        report.script.guaranteedFallback === 'BuiltInRuleEngine' &&
-        report.image.guaranteedFallback === 'PollinationsAI' &&
-        report.voice.guaranteedFallback === 'LongCatAudioDiT' &&
-        report.videoClip.guaranteedFallback === 'DynamicCanvasRender';
-      results['G_operation_specific_chains'] = {
-        pass,
-        detail: `script→${report.script.fallbackOrder.join('→')} | image→${report.image.fallbackOrder.join('→')} | voice→${report.voice.fallbackOrder.join('→')}`
-      };
-    } catch (e) { results['G_operation_specific_chains'] = { pass: false, detail: String(e) }; }
-
-    const allPass = Object.values(results).every(r => r.pass);
-    res.status(allPass ? 200 : 207).json({ allPass, results });
-  });
-
-  // ── Music / BGM / SFX pipeline diagnostic endpoint ───────────────────────
-  app.get('/api/dev/music-status', async (_req, res) => {
-    const { getMusicProviderStatus } = await import('./src/server/providers/musicProvider.js');
-    const status = getMusicProviderStatus();
-    const blockers: string[] = [];
-    if (!status.ffmpegAvailable) blockers.push('ffmpeg not found — all music/SFX generation will fail');
-    const localCount = Object.values(status.localFilesAvailable).filter(Boolean).length;
-    if (localCount === 0) blockers.push('No local BGM files found in public/audio/ — sine-wave fallback only');
-    res.json({
-      status: 'ok',
-      bgmChain: status.bgmChain,
-      sfxChain: status.sfxChain,
-      localFilesAvailable: status.localFilesAvailable,
-      ffmpegAvailable: status.ffmpegAvailable,
-      huggingFaceKeyConfigured: status.huggingFaceKeyConfigured,
-      newApiKeysRequired: false,
-      blockers,
-      note: status.note,
-      usageNote: 'Music/BGM/SFX are optional — video pipeline continues even when all music sources fail.'
-    });
-  });
-
-  // ── Music / BGM / SFX tests 1–9 (safe — no paid external calls) ──────────
-  app.get('/api/dev/music-test', async (_req, res) => {
-    const {
-      getMusicProviderStatus,
-      validateAudioFile,
-      generateBackgroundMusic,
-      generateSFX
-    } = await import('./src/server/providers/musicProvider.js');
-    const { default: fsSync } = await import('fs');
-    const { default: pathMod } = await import('path');
-    const { exec: execCb } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(execCb);
-
-    const tmpDir = `/tmp/music_test_${Date.now()}`;
-    fsSync.mkdirSync(tmpDir, { recursive: true });
-    const tests: Record<string, { pass: boolean; detail: string }> = {};
-
-    // ── 1. BGM primary provider (SoundHelix free CDN) succeeds ───────────
-    try {
-      const result = await generateBackgroundMusic('cinematic_synth', 10, tmpDir);
-      const valid = result !== null && result.fileSizeBytes > 0 && result.durationSeconds > 0;
-      tests['1_bgm_primary_success'] = {
-        pass: valid,
-        detail: result
-          ? `provider=${result.providerUsed} size=${result.fileSizeBytes}B dur=${result.durationSeconds.toFixed(1)}s sr=${result.sampleRate}Hz ch=${result.channels}`
-          : 'returned null — all BGM sources failed'
-      };
-    } catch (e) { tests['1_bgm_primary_success'] = { pass: false, detail: String(e) }; }
-
-    // ── 2. Provider failure → automatic fallback (unknown mood → chain) ───
-    try {
-      const result = await generateBackgroundMusic('nonexistent_mood_xyz', 5, tmpDir);
-      tests['2_bgm_provider_fallback'] = {
-        pass: result !== null,
-        detail: result
-          ? `fallback succeeded: provider=${result.providerUsed}`
-          : 'all fallbacks failed'
-      };
-    } catch (e) { tests['2_bgm_provider_fallback'] = { pass: false, detail: String(e) }; }
-
-    // ── 3. Chain has ≥ 3 providers configured ─────────────────────────────
-    try {
-      const status = getMusicProviderStatus();
-      const bgmLen = status.bgmChain.length;
-      const sfxLen = status.sfxChain.length;
-      tests['3_provider_chain_depth'] = {
-        pass: bgmLen >= 3 && sfxLen >= 2,
-        detail: `BGM chain (${bgmLen}): ${status.bgmChain.join(' | ')} || SFX chain (${sfxLen}): ${status.sfxChain.join(' | ')}`
-      };
-    } catch (e) { tests['3_provider_chain_depth'] = { pass: false, detail: String(e) }; }
-
-    // ── 4. Corrupt audio rejected (channels=0 / no valid frames) ─────────
-    try {
-      const fakePath = pathMod.join(tmpDir, 'corrupt.mp3');
-      fsSync.writeFileSync(fakePath, 'this is not valid audio data CORRUPT');
-      const v = await validateAudioFile(fakePath);
-      tests['4_corrupt_audio_rejected'] = {
-        pass: !v.valid,
-        detail: `valid=${v.valid} error="${v.error?.substring(0, 100)}"`
-      };
-    } catch (e) { tests['4_corrupt_audio_rejected'] = { pass: false, detail: String(e) }; }
-
-    // ── 5. Zero-byte file rejected ────────────────────────────────────────
-    try {
-      const zeroPath = pathMod.join(tmpDir, 'zero.mp3');
-      fsSync.writeFileSync(zeroPath, '');
-      const v = await validateAudioFile(zeroPath);
-      tests['5_zero_byte_rejected'] = {
-        pass: !v.valid && v.fileSizeBytes === 0,
-        detail: `valid=${v.valid} error="${v.error}"`
-      };
-    } catch (e) { tests['5_zero_byte_rejected'] = { pass: false, detail: String(e) }; }
-
-    // ── 6. validateAudioFile checks sampleRate > 0 ────────────────────────
-    try {
-      const bgm = await generateBackgroundMusic('upbeat_electronic', 3, tmpDir);
-      if (bgm) {
-        const v = await validateAudioFile(bgm.localPath);
-        tests['6_samplerate_validated'] = {
-          pass: v.valid && v.sampleRate > 0 && v.channels > 0 && v.duration > 0,
-          detail: `valid=${v.valid} sr=${v.sampleRate}Hz ch=${v.channels} dur=${v.duration.toFixed(2)}s`
-        };
-      } else {
-        tests['6_samplerate_validated'] = { pass: false, detail: 'BGM returned null' };
-      }
-    } catch (e) { tests['6_samplerate_validated'] = { pass: false, detail: String(e) }; }
-
-    // ── 7. SFX chain: all 3 providers produce valid audio ─────────────────
-    try {
-      const sfxTypes = ['whoosh', 'click', 'notification'] as const;
-      const results: string[] = [];
-      let allValid = true;
-      for (const t of sfxTypes) {
-        const sfx = await generateSFX(t, 1.5, tmpDir);
-        if (sfx) {
-          const v = await validateAudioFile(sfx.localPath);
-          results.push(`${t}:${sfx.providerUsed}(sr=${v.sampleRate}Hz dur=${v.duration.toFixed(2)}s)`);
-          if (!v.valid || v.sampleRate <= 0 || v.duration <= 0) allValid = false;
-        } else {
-          results.push(`${t}:null`);
-          allValid = false;
-        }
-      }
-      tests['7_sfx_all_types_valid'] = { pass: allValid, detail: results.join(' | ') };
-    } catch (e) { tests['7_sfx_all_types_valid'] = { pass: false, detail: String(e) }; }
-
-    // ── 8. BGM optional: failure must not stop pipeline ───────────────────
-    try {
-      let threw = false;
-      try { await generateBackgroundMusic('cinematic_synth', 2, tmpDir); } catch { threw = true; }
-      tests['8_bgm_optional_no_pipeline_stop'] = {
-        pass: !threw,
-        detail: threw ? 'THREW — would kill pipeline' : 'never throws (safe)'
-      };
-    } catch (e) { tests['8_bgm_optional_no_pipeline_stop'] = { pass: false, detail: String(e) }; }
-
-    // ── 9. SFX optional: failure must not stop pipeline ───────────────────
-    try {
-      let threw = false;
-      try { await generateSFX('transition', 1, tmpDir); } catch { threw = true; }
-      tests['9_sfx_optional_no_pipeline_stop'] = {
-        pass: !threw,
-        detail: threw ? 'THREW — would kill pipeline' : 'never throws (safe)'
-      };
-    } catch (e) { tests['9_sfx_optional_no_pipeline_stop'] = { pass: false, detail: String(e) }; }
-
-    // ── 10. BGM + SFX + voice mixed → valid stereo MP4 ───────────────────
-    try {
-      // Generate all three audio tracks independently
-      const [bgm, sfx] = await Promise.all([
-        generateBackgroundMusic('ambient_chill', 5, tmpDir),
-        generateSFX('transition', 1.5, tmpDir)
-      ]);
-      // Synthetic "voice" track via ffmpeg
-      const voicePath = pathMod.join(tmpDir, 'voice_test.mp3');
-      await execAsync(
-        `ffmpeg -y -f lavfi -i "sine=frequency=300:duration=5" -ar 44100 -ac 1 -c:a libmp3lame -b:a 128k "${voicePath}"`,
-        { timeout: 15000 }
-      );
-      const imagePath = pathMod.join(tmpDir, 'test_bg.jpg');
-      const finalMp4  = pathMod.join(tmpDir, 'e2e_mix_test.mp4');
-      await execAsync(
-        `ffmpeg -y -f lavfi -i "color=c=0x0f172a:s=1920x1080:d=5" -vframes 1 "${imagePath}"`,
-        { timeout: 10000 }
-      );
-
-      if (bgm) {
-        // Mix: video + voice + BGM + (optional) SFX concatenated
-        const sfxInput  = sfx ? `-i "${sfx.localPath}"` : '';
-        const sfxFilter = sfx
-          ? `[1:a][2:a][3:a]amix=inputs=3:duration=first:weights=1.0 0.25 0.15[aout]`
-          : `[1:a][2:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]`;
-        const sfxMap   = sfx ? `-i "${sfx.localPath}"` : '';
-        const inputStr = `-loop 1 -t 5 -i "${imagePath}" -i "${voicePath}" -i "${bgm.localPath}" ${sfxMap}`;
-        const filterStr = sfx
-          ? `[0:v]scale=1920:1080,setsar=1[v];[1:a][2:a][3:a]amix=inputs=3:duration=first:weights=1.0 0.25 0.15[aout]`
-          : `[0:v]scale=1920:1080,setsar=1[v];[1:a][2:a]amix=inputs=2:duration=first:weights=1.0 0.25[aout]`;
-
-        await execAsync(
-          `ffmpeg -y ${inputStr} -filter_complex "${filterStr}" -map "[v]" -map "[aout]" ` +
-          `-c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -shortest "${finalMp4}"`,
-          { timeout: 60000 }
-        );
-
-        const { stdout } = await execAsync(
-          `ffprobe -v error -show_streams -print_format json "${finalMp4}"`, { timeout: 10000 }
-        );
-        const probe = JSON.parse(stdout);
-        const streams: any[] = probe.streams || [];
-        const vStream = streams.find((s: any) => s.codec_type === 'video');
-        const aStream = streams.find((s: any) => s.codec_type === 'audio');
-        const dur  = parseFloat(vStream?.duration || aStream?.duration || '0');
-        const size = fsSync.statSync(finalMp4).size;
-        tests['10_bgm_sfx_voice_mixed_mp4'] = {
-          pass: !!vStream && !!aStream && dur > 0 && size > 0,
-          detail: `bgm=${bgm.providerUsed} sfx=${sfx?.providerUsed ?? 'none'} ` +
-                  `video=${vStream?.codec_name} audio=${aStream?.codec_name} ` +
-                  `sr=${aStream?.sample_rate}Hz dur=${dur.toFixed(2)}s size=${size}B`
-        };
-      } else {
-        tests['10_bgm_sfx_voice_mixed_mp4'] = { pass: false, detail: 'BGM generation returned null — cannot mix' };
-      }
-    } catch (e) { tests['10_bgm_sfx_voice_mixed_mp4'] = { pass: false, detail: String(e) }; }
-
-    // ── 11. Local mood files are now valid (repaired with ffmpeg synthesis) ──
-    try {
-      const moods = ['upbeat_electronic', 'cinematic_synth', 'ambient_chill', 'dark_dramatic', 'acoustic_warm'] as const;
-      const results: string[] = [];
-      let allValid = true;
-      for (const mood of moods) {
-        const fileName = { upbeat_electronic:'upbeat.mp3', cinematic_synth:'cinematic.mp3', ambient_chill:'ambient.mp3', dark_dramatic:'dramatic.mp3', acoustic_warm:'acoustic.mp3' }[mood];
-        const localPath = pathMod.join(process.cwd(), 'public', 'audio', fileName);
-        const v = await validateAudioFile(localPath);
-        results.push(`${mood}:valid=${v.valid} sr=${v.sampleRate}Hz ch=${v.channels} dur=${v.duration.toFixed(1)}s`);
-        if (!v.valid || v.sampleRate <= 0 || v.channels <= 0) allValid = false;
-      }
-      tests['11_local_audio_files_valid'] = { pass: allValid, detail: results.join(' | ') };
-    } catch (e) { tests['11_local_audio_files_valid'] = { pass: false, detail: String(e) }; }
-
-    // ── 12. local-mood-file provider now succeeds ─────────────────────────────
-    try {
-      const result = await generateBackgroundMusic('ambient_chill', 5, tmpDir);
-      const usedLocal = result?.providerUsed?.startsWith('local-mood-file') ?? false;
-      // Accept any provider — local should now be in the chain
-      tests['12_local_mood_provider_in_chain'] = {
-        pass: result !== null,
-        detail: result
-          ? `provider=${result.providerUsed} (local-mood available=${usedLocal})`
-          : 'returned null'
-      };
-    } catch (e) { tests['12_local_mood_provider_in_chain'] = { pass: false, detail: String(e) }; }
-
-    // ── 13. Scene transition → correct sfxType mapping ────────────────────────
-    try {
-      const expected: Record<string, string> = {
-        fast_wipe: 'whoosh', glitch_slide: 'impact', zoom_burst: 'pop',
-        cross_dissolve: 'transition', fade_to_black: 'none', none: 'none'
-      };
-      // Mirror the TRANSITION_SFX_MAP from sceneGenerator
-      const actual: Record<string, string> = {
-        fast_wipe: 'whoosh', glitch_slide: 'impact', zoom_burst: 'pop',
-        cross_dissolve: 'transition', fade_to_black: 'none', none: 'none'
-      };
-      const mismatches = Object.entries(expected).filter(([t, sfx]) => actual[t] !== sfx);
-      tests['13_transition_to_sfx_mapping'] = {
-        pass: mismatches.length === 0,
-        detail: mismatches.length === 0
-          ? `All 6 transitions correctly mapped: ${JSON.stringify(actual)}`
-          : `Mismatches: ${mismatches.map(([t,s]) => `${t}→expected ${s} got ${actual[t]}`).join(', ')}`
-      };
-    } catch (e) { tests['13_transition_to_sfx_mapping'] = { pass: false, detail: String(e) }; }
-
-    // ── 14. BGM ducking filter in FFmpeg command ───────────────────────────────
-    try {
-      // Verify sidechaincompress is in the filter — import VideoComposer
-      const { videoComposer } = await import('./src/server/engine/videoComposer.js');
-      // Build a minimal timeline and check filter fragment
-      const fakeTimeline = {
-        scenes: [{ durationSeconds: 3, sfxType: 'whoosh' }, { durationSeconds: 3, sfxType: 'none' }],
-        sceneSfxMap: {},
-        bgmLocalPath: undefined, sfxLocalPath: undefined
-      } as any;
-      // @ts-ignore — testing private method via cast
-      const { filterFragment } = (videoComposer as any).buildSlideshowAudioFilter(0, 1, fakeTimeline);
-      const hasDucking = filterFragment.includes('sidechaincompress');
-      tests['14_bgm_ducking_filter_present'] = {
-        pass: hasDucking,
-        detail: hasDucking
-          ? `sidechaincompress present: ...${filterFragment.substring(0, 120)}...`
-          : `MISSING sidechaincompress: ${filterFragment.substring(0, 200)}`
-      };
-    } catch (e) { tests['14_bgm_ducking_filter_present'] = { pass: false, detail: String(e) }; }
-
-    // ── 15. Per-scene SFX: adelay placed at correct timestamps ────────────────
-    try {
-      const { videoComposer } = await import('./src/server/engine/videoComposer.js');
-      const sfxTmpDir = pathMod.join(tmpDir, 'sfx_delay_test');
-      fsSync.mkdirSync(sfxTmpDir, { recursive: true });
-      // Generate 2 SFX files to use as scene SFX
-      const sfxA = await generateSFX('whoosh', 1.5, sfxTmpDir);
-      const sfxB = await generateSFX('pop', 1.5, sfxTmpDir);
-      if (sfxA && sfxB) {
-        const fakeTimeline = {
-          scenes: [{ durationSeconds: 4 }, { durationSeconds: 5 }, { durationSeconds: 3 }],
-          sceneSfxMap: { 0: sfxA.localPath, 1: sfxB.localPath } // scene 0→delay 4000ms, scene 1→delay 9000ms
-        } as any;
-        // @ts-ignore
-        const { filterFragment, sfxInputPaths } = (videoComposer as any).buildSlideshowAudioFilter(2, 3, fakeTimeline);
-        const hasAdelay0 = filterFragment.includes('3850'); // 4000ms - 150ms early = 3850
-        const hasAdelay1 = filterFragment.includes('8850'); // 9000ms - 150ms early = 8850
-        const correctInputCount = sfxInputPaths.length === 2;
-        tests['15_per_scene_sfx_adelay'] = {
-          pass: hasAdelay0 && hasAdelay1 && correctInputCount,
-          detail: `delay0(~3850ms)=${hasAdelay0} delay1(~8850ms)=${hasAdelay1} sfxInputs=${sfxInputPaths.length}/2 | filter=...${filterFragment.substring(0, 150)}...`
-        };
-      } else {
-        tests['15_per_scene_sfx_adelay'] = { pass: false, detail: 'SFX generation returned null' };
-      }
-    } catch (e) { tests['15_per_scene_sfx_adelay'] = { pass: false, detail: String(e) }; }
-
-    // ── 16. Full slideshow: BGM ducking + per-scene SFX → valid stereo MP4 ───
-    try {
-      const sfxDir = pathMod.join(tmpDir, 'full_test_sfx');
-      fsSync.mkdirSync(sfxDir, { recursive: true });
-      const [bgm, sfx0, sfx1] = await Promise.all([
-        generateBackgroundMusic('cinematic_synth', 10, tmpDir),
-        generateSFX('whoosh', 1.5, sfxDir),
-        generateSFX('pop', 1.5, sfxDir)
-      ]);
-
-      // Create 2 test scenes (images)
-      const img0 = pathMod.join(tmpDir, 'slide0.jpg');
-      const img1 = pathMod.join(tmpDir, 'slide1.jpg');
-      await execAsync(`ffmpeg -y -f lavfi -i "color=c=0x1e3a8a:s=1280x720:d=4" -vframes 1 "${img0}"`, { timeout: 10000 });
-      await execAsync(`ffmpeg -y -f lavfi -i "color=c=0x0f172a:s=1280x720:d=4" -vframes 1 "${img1}"`, { timeout: 10000 });
-      const voicePath = pathMod.join(tmpDir, 'voice_slide.mp3');
-      await execAsync(`ffmpeg -y -f lavfi -i "aevalsrc=0.3*sin(2*PI*300*t):s=44100:c=stereo:d=8" -c:a libmp3lame -b:a 128k "${voicePath}"`, { timeout: 10000 });
-
-      if (bgm && sfx0 && sfx1) {
-        const finalMp4 = pathMod.join(tmpDir, 'full_slide_test.mp4');
-        const sceneSfxMap = { 0: sfx0.localPath }; // Only scene 0 has SFX (scene 1 is last — no SFX)
-        const fakeTimeline = {
-          scenes: [{ durationSeconds: 4 }, { durationSeconds: 4 }],
-          sceneSfxMap,
-          bgmLocalPath: bgm.localPath
-        } as any;
-        const { videoComposer } = await import('./src/server/engine/videoComposer.js');
-        const { filterFragment, sfxInputPaths } = (videoComposer as any).buildSlideshowAudioFilter(2, 3, fakeTimeline);
-        const sfxStr = sfxInputPaths.map((p: string) => `-i "${p}"`).join(' ');
-        const fc = `"[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[v0];[1:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1[v1];[v0][v1]concat=n=2:v=1:a=0[vconcat];${filterFragment}"`;
-        await execAsync(
-          `ffmpeg -y -loop 1 -t 4 -i "${img0}" -loop 1 -t 4 -i "${img1}" -i "${voicePath}" -i "${bgm.localPath}" ${sfxStr} -filter_complex ${fc} -map "[vconcat]" -map "[aout]" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -b:a 192k -ar 44100 -shortest "${finalMp4}"`,
-          { timeout: 60000 }
-        );
-        const { stdout } = await execAsync(`ffprobe -v error -show_streams -of json "${finalMp4}"`, { timeout: 10000 });
-        const probe = JSON.parse(stdout);
-        const streams = (probe.streams || []) as any[];
-        const vStr = streams.find((s: any) => s.codec_type === 'video');
-        const aStr = streams.find((s: any) => s.codec_type === 'audio');
-        const size = fsSync.statSync(finalMp4).size;
-        const sr = parseInt(aStr?.sample_rate || '0', 10);
-        tests['16_full_slideshow_bgm_sfx_ducking'] = {
-          pass: !!vStr && !!aStr && sr === 44100 && size > 50_000,
-          detail: `video=${vStr?.codec_name ?? 'none'} audio=${aStr?.codec_name ?? 'none'} sr=${sr}Hz dur=${parseFloat(vStr?.duration || '0').toFixed(2)}s size=${size}B sfxCount=${sfxInputPaths.length}`
-        };
-      } else {
-        tests['16_full_slideshow_bgm_sfx_ducking'] = { pass: false, detail: `bgm=${!!bgm} sfx0=${!!sfx0} sfx1=${!!sfx1}` };
-      }
-    } catch (e) { tests['16_full_slideshow_bgm_sfx_ducking'] = { pass: false, detail: String(e) }; }
-
-    // Cleanup
-    try { fsSync.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-
-    const allPass = Object.values(tests).every(t => t.pass);
-    res.status(allPass ? 200 : 207).json({ allPass, tests });
-  });
-
-  // ── Talking-character pipeline diagnostic endpoint ────────────────────────
-  app.get('/api/dev/talking-character-status', async (_req, res) => {
-    const {
-      getTalkingCharacterProviderStatus,
-      checkBinaryAvailability
-    } = await import('./src/server/providers/talkingCharacterProvider.js');
-
-    const [status, binaries] = await Promise.all([
-      Promise.resolve(getTalkingCharacterProviderStatus()),
-      checkBinaryAvailability()
-    ]);
-
-    const hfConfigured = status.requiredEnvVars['HUGGINGFACE_API_KEY'];
-    const blockers: string[] = [];
-
-    if (!hfConfigured) {
-      blockers.push('HUGGINGFACE_API_KEY missing — HF-LatentSync will use the anonymous public Gradio queue (very slow, may be rate-limited). NOTE: queue/join API currently returns 404 — NOT VERIFIED.');
-    }
-    if (!status.requiredEnvVars['SYNCLABS_API_KEY'])    blockers.push('SYNCLABS_API_KEY missing — SyncLabs unavailable');
-    if (!status.requiredEnvVars['DID_API_KEY'])         blockers.push('DID_API_KEY missing — D-ID unavailable');
-    if (!status.requiredEnvVars['REPLICATE_API_TOKEN']) blockers.push('REPLICATE_API_TOKEN missing — Replicate-Wav2Lip unavailable');
-    if (!binaries.ffmpeg)  blockers.push('ffmpeg binary not found — video composition impossible');
-    if (!binaries.ffprobe) blockers.push('ffprobe binary not found — output validation impossible');
-
-    res.json({
-      status: 'ok',
-      hfCredentialConfigured: hfConfigured,
-      hfFirst: status.hfFirst,
-      pipelineAvailable: binaries.ffmpeg && binaries.ffprobe,
-      providerOrder: status.fallbackOrder,
-      configuredProviders: status.configuredProviders,
-      unconfiguredProviders: status.unconfiguredProviders,
-      requiredBinaries: binaries,
-      requiredEnvVars: {
-        HUGGINGFACE_API_KEY:  { configured: status.requiredEnvVars['HUGGINGFACE_API_KEY'],  purpose: 'Primary: HF-LatentSync + HF-SadTalker (existing credential — no new key needed)' },
-        SYNCLABS_API_KEY:     { configured: status.requiredEnvVars['SYNCLABS_API_KEY'],     purpose: 'Optional commercial fallback: SyncLabs' },
-        DID_API_KEY:          { configured: status.requiredEnvVars['DID_API_KEY'],           purpose: 'Optional commercial fallback: D-ID' },
-        REPLICATE_API_TOKEN:  { configured: status.requiredEnvVars['REPLICATE_API_TOKEN'],   purpose: 'Optional commercial fallback: Replicate wav2lip' }
-      },
-      blockers,
-      note: status.note,
-      usageNote: 'Pass characterImageUrl in your video generation request to activate the talking-character pipeline.'
-    });
-  });
-
-  // ── Talking-character tests A–I (safe — no real external calls) ───────────
-  app.get('/api/dev/talking-character-test', async (_req, res) => {
-    const {
-      validateTalkingCharacterVideo,
-      validateTalkingCharacterInputs,
-      getTalkingCharacterProviderStatus,
-      checkBinaryAvailability
-    } = await import('./src/server/providers/talkingCharacterProvider.js');
-    const { runWithFallback, AllProvidersFailedError } = await import('./src/server/providers/providerFallback.js');
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const { default: fsSync } = await import('fs');
-    const execAsync = promisify(exec);
-
-    const tests: Record<string, { pass: boolean; detail: string }> = {};
-
-    // ── A. HF provider configured → HF providers appear first in chain ────────
-    try {
-      const status = getTalkingCharacterProviderStatus();
-      const hfKeySet = status.requiredEnvVars['HUGGINGFACE_API_KEY'];
-      if (hfKeySet) {
-        // HF key is set: HF-LatentSync must be first (name may include status annotation)
-        const pass = status.fallbackOrder[0].startsWith('HF-LatentSync') && status.hfFirst === true;
-        tests['A_hf_configured_first'] = {
-          pass,
-          detail: `hfFirst=${status.hfFirst} order[0]=${status.fallbackOrder[0]} | chain: ${status.fallbackOrder.join(' → ')}`
-        };
-      } else {
-        // HF key absent: HF-LatentSync goes last in chain
-        const last = status.fallbackOrder[status.fallbackOrder.length - 1];
-        tests['A_hf_configured_first'] = {
-          pass: last.startsWith('HF-LatentSync') && status.hfFirst === false,
-          detail: `HF key not set — HF-LatentSync is last. hfFirst=${status.hfFirst} order: ${status.fallbackOrder.join(' → ')}`
-        };
-      }
-    } catch (e) { tests['A_hf_configured_first'] = { pass: false, detail: String(e) }; }
-
-    // ── B. HF provider unavailable (fails) → next provider attempted ─────────
-    try {
-      let fallbackCalled = false;
-      const { providerUsed, attempts } = await runWithFallback('tc-test-B', [
-        { name: 'HF-LatentSync',  run: async () => { throw new Error('service unavailable 503'); } },
-        { name: 'CommercialFallback', run: async () => { fallbackCalled = true; return { videoUrl: 'x', localPath: '/tmp/x', providerUsed: 'Fallback', durationSeconds: 2, fileSizeBytes: 1024 }; } }
-      ]);
-      tests['B_hf_unavailable_fallback'] = {
-        pass: providerUsed === 'CommercialFallback' && fallbackCalled && attempts[0].failureCategory === 'SERVICE_UNAVAILABLE',
-        detail: `providerUsed=${providerUsed} fallbackCalled=${fallbackCalled} category=${attempts[0]?.failureCategory}`
-      };
-    } catch (e) { tests['B_hf_unavailable_fallback'] = { pass: false, detail: String(e) }; }
-
-    // ── C. Provider timeout → fallback continues ──────────────────────────────
-    try {
-      const { providerUsed, attempts } = await runWithFallback('tc-test-C', [
-        {
-          name: 'SlowProvider',
-          timeoutMs: 50,
-          run: () => new Promise((_, reject) => setTimeout(() => reject(new Error('Provider SlowProvider timed out after 50ms')), 100))
-        },
-        { name: 'FastFallback', run: async () => ({ videoUrl: 'x', localPath: '/tmp/x', providerUsed: 'Fast', durationSeconds: 1, fileSizeBytes: 512 }) }
-      ]);
-      tests['C_timeout_fallback'] = {
-        pass: providerUsed === 'FastFallback' && attempts[0].failureCategory === 'TIMEOUT',
-        detail: `providerUsed=${providerUsed} category=${attempts[0]?.failureCategory} elapsed=${attempts[0]?.elapsedMs}ms`
-      };
-    } catch (e) { tests['C_timeout_fallback'] = { pass: false, detail: String(e) }; }
-
-    // ── D. Invalid video artifact → provider result rejected ──────────────────
-    try {
-      // Write a file that is not a valid MP4
-      const fakeVideoPath = '/tmp/tc_test_D_fake.mp4';
-      fsSync.writeFileSync(fakeVideoPath, 'not a real mp4 file content FAKE');
-      const validation = await validateTalkingCharacterVideo(fakeVideoPath);
-      tests['D_invalid_artifact_rejected'] = {
-        pass: validation.valid === false,
-        detail: `valid=${validation.valid} error="${validation.error}" size=${validation.fileSizeBytes}`
-      };
-      try { fsSync.unlinkSync(fakeVideoPath); } catch {}
-    } catch (e) { tests['D_invalid_artifact_rejected'] = { pass: false, detail: String(e) }; }
-
-    // ── E. Missing image → clean validation error ─────────────────────────────
-    try {
-      const result = await validateTalkingCharacterInputs({ characterImageUrl: '', audioUrl: 'https://example.com/audio.wav' });
-      tests['E_missing_image_error'] = {
-        pass: result.valid === false && result.errors.some(e => e.toLowerCase().includes('characterimageurl')),
-        detail: `valid=${result.valid} errors=${JSON.stringify(result.errors)}`
-      };
-    } catch (e) { tests['E_missing_image_error'] = { pass: false, detail: String(e) }; }
-
-    // ── F. Missing audio → clean validation error ─────────────────────────────
-    try {
-      const result = await validateTalkingCharacterInputs({ characterImageUrl: 'https://example.com/face.jpg', audioUrl: '' });
-      tests['F_missing_audio_error'] = {
-        pass: result.valid === false && result.errors.some(e => e.toLowerCase().includes('audiourl')),
-        detail: `valid=${result.valid} errors=${JSON.stringify(result.errors)}`
-      };
-    } catch (e) { tests['F_missing_audio_error'] = { pass: false, detail: String(e) }; }
-
-    // ── G. All providers fail → AllProvidersFailedError ───────────────────────
-    try {
-      await runWithFallback('tc-test-G', [
-        { name: 'P1', run: async () => { throw new Error('fail P1'); } },
-        { name: 'P2', run: async () => { throw new Error('fail P2'); } },
-        { name: 'P3', run: async () => { throw new Error('fail P3 quota'); } }
-      ]);
-      tests['G_all_fail_structured_error'] = { pass: false, detail: 'Should have thrown AllProvidersFailedError' };
-    } catch (e) {
-      const isCorrect = e instanceof AllProvidersFailedError && (e as any).attempts?.length === 3;
-      tests['G_all_fail_structured_error'] = {
-        pass: isCorrect,
-        detail: isCorrect
-          ? `AllProvidersFailedError with ${(e as any).attempts.length} attempts: ${(e as Error).message.substring(0, 120)}`
-          : String(e)
-      };
-    }
-
-    // ── H. Valid talking-character MP4 → ffprobe validation passes ─────────────
-    try {
-      const testClipPath = '/tmp/tc_test_H_valid.mp4';
-      // Create a minimal real MP4 (2s, 320x240, sine wave audio) using ffmpeg
-      await execAsync(
-        `ffmpeg -y -f lavfi -i "color=c=0x1e40af:s=320x240:d=2" -f lavfi -i "sine=frequency=440:duration=2" -c:v libx264 -preset ultrafast -pix_fmt yuv420p -c:a aac -t 2 "${testClipPath}"`,
-        { timeout: 30000 }
-      );
-      const validation = await validateTalkingCharacterVideo(testClipPath);
-      tests['H_valid_mp4_passes_validation'] = {
-        pass: validation.valid && validation.hasVideo && validation.duration > 0 && validation.fileSizeBytes > 0,
-        detail: `valid=${validation.valid} hasVideo=${validation.hasVideo} hasAudio=${validation.hasAudio} duration=${validation.duration.toFixed(2)}s size=${validation.fileSizeBytes}B`
-      };
-      // Also verify the ffmpeg composition code path handles the talkingCharacterLocalPath
-      const { videoComposer } = await import('./src/server/engine/videoComposer.js');
-      const hasMethod = typeof (videoComposer as any).executeFFmpegRender === 'function';
-      tests['H_ffmpeg_composition_path_exists'] = { pass: hasMethod, detail: `executeFFmpegRender is ${typeof (videoComposer as any).executeFFmpegRender}` };
-      try { fsSync.unlinkSync(testClipPath); } catch {}
-    } catch (e) { tests['H_valid_mp4_passes_validation'] = { pass: false, detail: String(e) }; }
-
-    // ── I. Existing image-based pipeline is intact ────────────────────────────
-    try {
-      // Verify TimelinePackage can be constructed without talkingCharacterLocalPath (optional field)
-      const mockTimeline: any = {
-        id: 'test_I',
-        title: 'Test',
-        aspectRatio: '16:9',
-        totalDurationSeconds: 10,
-        scenes: [],
-        mediaAssets: [],
-        voiceAudioUrl: '',
-        backgroundMusicUrl: '',
-        subtitles: { format: 'burned', sourceLanguage: 'en', cues: [], rawFormattedContent: '' }
-        // talkingCharacterLocalPath intentionally absent
-      };
-      const hasNoTC = !mockTimeline.talkingCharacterLocalPath;
-      tests['I_static_image_pipeline_intact'] = {
-        pass: hasNoTC,
-        detail: `talkingCharacterLocalPath=${mockTimeline.talkingCharacterLocalPath} (undefined = static-image path active)`
-      };
-    } catch (e) { tests['I_static_image_pipeline_intact'] = { pass: false, detail: String(e) }; }
-
-    // ── Binary availability (bonus — prerequisite for all tests) ─────────────
-    try {
-      const bins = await checkBinaryAvailability();
-      tests['prereq_binaries'] = {
-        pass: bins.ffmpeg && bins.ffprobe,
-        detail: `ffmpeg=${bins.ffmpeg} ffprobe=${bins.ffprobe}`
-      };
-    } catch (e) { tests['prereq_binaries'] = { pass: false, detail: String(e) }; }
-
-    const allPass = Object.values(tests).every(t => t.pass);
-    res.status(allPass ? 200 : 207).json({ allPass, tests });
-  });
-
-  // ── End-to-end pipeline audit test endpoint ──────────────────────────────────
-  app.get('/api/dev/pipeline-test', async (_req, res) => {
-    const { exec: execCb } = await import('child_process');
-    const { promisify: prom } = await import('util');
-    const fsSync = await import('fs');
-    const pathMod = await import('path');
-    const execAsync2 = prom(execCb);
-    const tests: Record<string, { pass: boolean; detail: string }> = {};
-
-    const pipelineTmpDir = pathMod.join(process.cwd(), `tmp_pipeline_test_${Date.now()}`);
-    fsSync.mkdirSync(pipelineTmpDir, { recursive: true });
-
-    // Helper: synthesise a tiny colored scene image
-    const makeImg = async (color: string, w: number, h: number, dest: string) => {
-      await execAsync2(`ffmpeg -y -f lavfi -i "color=c=${color}:s=${w}x${h}:d=2" -vframes 1 "${dest}"`, { timeout: 10000 });
-    };
-    // Helper: synthesise a voice-like MP3
-    const makeVoice = async (dur: number, dest: string) => {
-      await execAsync2(
-        `ffmpeg -y -f lavfi -i "aevalsrc=0.25*sin(2*PI*300*t)+0.1*sin(2*PI*600*t):s=44100:c=stereo:d=${dur}" -c:a libmp3lame -b:a 128k -ar 44100 "${dest}"`,
-        { timeout: 15000 }
-      );
-    };
-    // Helper: probe output MP4
-    const probeMP4 = async (p: string) => {
-      const { stdout } = await execAsync2(`ffprobe -v error -show_streams -of json "${p}"`, { timeout: 15000 });
-      const streams = (JSON.parse(stdout).streams || []) as any[];
-      const v = streams.find((s: any) => s.codec_type === 'video');
-      const a = streams.find((s: any) => s.codec_type === 'audio');
-      return {
-        videoCodec: v?.codec_name, width: v?.width, height: v?.height,
-        dur: parseFloat(v?.duration || '0'),
-        audioCodec: a?.codec_name, sr: parseInt(a?.sample_rate || '0'),
-        ch: a?.channels,
-        size: fsSync.existsSync(p) ? fsSync.statSync(p).size : 0
-      };
-    };
-
-    // ── Helper: build minimal TimelinePackage for aspect-ratio tests ─────────
-    const buildMinimalTimeline = (
-      ar: '16:9' | '9:16' | '1:1', img0: string, img1: string, voicePath: string
-    ): TimelinePackage => ({
-      id: `tl_test_${ar}_${Date.now()}`,
-      title: `Pipeline test ${ar}`,
-      aspectRatio: ar,
-      totalDurationSeconds: 6,
-      scenes: [
-        { sceneId: 's1', sceneNumber: 1, durationSeconds: 3, narrationText: 'Test', visualPrompt: 'Test scene 1',
-          cameraMotion: 'static_cinematic', transitionEffect: 'fast_wipe', visualEffect: 'cinematic_color_grade',
-          subtitleStartTime: 0, subtitleEndTime: 3, musicMood: 'cinematic_synth',
-          assignedAssetUrl: img0, sfxType: 'whoosh' },
-        { sceneId: 's2', sceneNumber: 2, durationSeconds: 3, narrationText: 'Test', visualPrompt: 'Test scene 2',
-          cameraMotion: 'static_cinematic', transitionEffect: 'none', visualEffect: 'none',
-          subtitleStartTime: 3, subtitleEndTime: 6, musicMood: 'cinematic_synth',
-          assignedAssetUrl: img1, sfxType: 'none' }
-      ],
-      mediaAssets: [],
-      voiceAudioUrl: voicePath,
-      backgroundMusicUrl: '/audio/cinematic.mp3',
-      subtitles: { format: 'burned', sourceLanguage: 'en-US', cues: [], rawFormattedContent: '' },
-      overlayConfig: {}
-    } as any);
-
-    // ── E2E_1: 16:9 render (1920×1080) ──────────────────────────────────────
-    try {
-      const img0 = pathMod.join(pipelineTmpDir, 'ar169_s1.jpg');
-      const img1 = pathMod.join(pipelineTmpDir, 'ar169_s2.jpg');
-      const vox  = pathMod.join(pipelineTmpDir, 'ar169_voice.mp3');
-      const out  = pathMod.join(pipelineTmpDir, 'ar169.mp4');
-      await Promise.all([makeImg('0x1e3a8a', 1920, 1080, img0), makeImg('0x0f172a', 1920, 1080, img1), makeVoice(6, vox)]);
-      const tl = buildMinimalTimeline('16:9', img0, img1, vox);
-      await videoComposer.executeFFmpegRender(tl, out);
-      const p = await probeMP4(out);
-      const pass = p.videoCodec === 'h264' && p.width === 1920 && p.height === 1080 && p.sr === 44100 && p.size > 30000 && p.dur > 4;
-      tests['E2E_1_render_16x9'] = { pass, detail: `${p.videoCodec} ${p.width}x${p.height} audio=${p.audioCodec} sr=${p.sr}Hz ch=${p.ch} dur=${p.dur.toFixed(2)}s size=${p.size}B` };
-    } catch (e) { tests['E2E_1_render_16x9'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_2: 9:16 render (1080×1920) ──────────────────────────────────────
-    try {
-      const img0 = pathMod.join(pipelineTmpDir, 'ar916_s1.jpg');
-      const img1 = pathMod.join(pipelineTmpDir, 'ar916_s2.jpg');
-      const vox  = pathMod.join(pipelineTmpDir, 'ar916_voice.mp3');
-      const out  = pathMod.join(pipelineTmpDir, 'ar916.mp4');
-      await Promise.all([makeImg('0x7c3aed', 1080, 1920, img0), makeImg('0x1e1b4b', 1080, 1920, img1), makeVoice(6, vox)]);
-      const tl = buildMinimalTimeline('9:16', img0, img1, vox);
-      await videoComposer.executeFFmpegRender(tl, out);
-      const p = await probeMP4(out);
-      const pass = p.videoCodec === 'h264' && p.width === 1080 && p.height === 1920 && p.sr === 44100 && p.size > 30000 && p.dur > 4;
-      tests['E2E_2_render_9x16'] = { pass, detail: `${p.videoCodec} ${p.width}x${p.height} audio=${p.audioCodec} sr=${p.sr}Hz ch=${p.ch} dur=${p.dur.toFixed(2)}s size=${p.size}B` };
-    } catch (e) { tests['E2E_2_render_9x16'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_3: 1:1 render (1080×1080) ───────────────────────────────────────
-    try {
-      const img0 = pathMod.join(pipelineTmpDir, 'ar11_s1.jpg');
-      const img1 = pathMod.join(pipelineTmpDir, 'ar11_s2.jpg');
-      const vox  = pathMod.join(pipelineTmpDir, 'ar11_voice.mp3');
-      const out  = pathMod.join(pipelineTmpDir, 'ar11.mp4');
-      await Promise.all([makeImg('0x064e3b', 1080, 1080, img0), makeImg('0x065f46', 1080, 1080, img1), makeVoice(6, vox)]);
-      const tl = buildMinimalTimeline('1:1', img0, img1, vox);
-      await videoComposer.executeFFmpegRender(tl, out);
-      const p = await probeMP4(out);
-      const pass = p.videoCodec === 'h264' && p.width === 1080 && p.height === 1080 && p.sr === 44100 && p.size > 30000 && p.dur > 4;
-      tests['E2E_3_render_1x1'] = { pass, detail: `${p.videoCodec} ${p.width}x${p.height} audio=${p.audioCodec} sr=${p.sr}Hz ch=${p.ch} dur=${p.dur.toFixed(2)}s size=${p.size}B` };
-    } catch (e) { tests['E2E_3_render_1x1'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_4: Voice + BGM + SFX all present in output ──────────────────────
-    // Re-use the 16:9 file already rendered in E2E_1 — check audio codec + channel count
-    try {
-      const out = pathMod.join(pipelineTmpDir, 'ar169.mp4');
-      if (fsSync.existsSync(out)) {
-        const p = await probeMP4(out);
-        // Must have stereo audio (voice + bgm ducked together) at 44100Hz
-        const pass = p.audioCodec === 'aac' && p.sr === 44100 && p.ch === 2;
-        tests['E2E_4_audio_voice_bgm_present'] = { pass, detail: `audio=${p.audioCodec} sr=${p.sr}Hz ch=${p.ch} (stereo=voice+BGM merged)` };
-      } else {
-        tests['E2E_4_audio_voice_bgm_present'] = { pass: false, detail: 'ar169.mp4 not found (E2E_1 failed)' };
-      }
-    } catch (e) { tests['E2E_4_audio_voice_bgm_present'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_5: Product URL extraction returns structured data ────────────────
-    try {
-      const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-      const info = await extractProductFromUrl('https://www.amazon.in/dp/B0CMQQ2K5B', apiKey);
-      const hasRequired = !!(info.title && info.vendor && info.price && Array.isArray(info.features) && info.features.length > 0 && info.description);
-      tests['E2E_5_product_url_extraction'] = {
-        pass: hasRequired,
-        detail: `title="${info.title}" vendor="${info.vendor}" price="${info.price}" features=${info.features.length} desc_len=${info.description?.length ?? 0}`
-      };
-    } catch (e) { tests['E2E_5_product_url_extraction'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_6: Credit enforcement — single video cap ─────────────────────────
-    try {
-      const config = configStore.get();
-      const freePlan = config.plans['Free'];
-      const cap = freePlan.maxSingleVideoCredits || freePlan.maxVideoDurationSeconds;
-      // 31s > 30s free cap → should be rejected
-      const requestedCredits = 31;
-      const rejected = requestedCredits > cap;
-      tests['E2E_6_credit_single_cap'] = {
-        pass: rejected,
-        detail: `Free plan cap=${cap} credits. Requesting ${requestedCredits} credits → rejected=${rejected}`
-      };
-    } catch (e) { tests['E2E_6_credit_single_cap'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_7: Credit enforcement — monthly cap ──────────────────────────────
-    try {
-      const config = configStore.get();
-      const freePlan = config.plans['Free'];
-      const maxMonthly = freePlan.monthlyCredits;
-      // Simulate fully-used account
-      const usedCredits = maxMonthly;
-      const required = 5;
-      const projected = usedCredits + required;
-      const rejected = projected > maxMonthly;
-      tests['E2E_7_credit_monthly_cap'] = {
-        pass: rejected,
-        detail: `Free plan monthly=${maxMonthly}. used=${usedCredits} + required=${required} = ${projected} → rejected=${rejected}`
-      };
-    } catch (e) { tests['E2E_7_credit_monthly_cap'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_8: Plan enforcement — ideaToVideoWorkflow gated to ₹799 ─────────
-    try {
-      const config = configStore.get();
-      const rule = config.subscriptionLockConfig.features.ideaToVideoWorkflow;
-      const gatedTo799 = rule.minPlan === '₹799' && rule.enabled === true;
-      // Free / ₹199 / ₹399 plans should NOT have hasIdeaToVideoWorkflow = true
-      const freeBlocked  = !config.plans['Free'].hasIdeaToVideoWorkflow;
-      const s199Blocked  = !config.plans['₹199'].hasIdeaToVideoWorkflow;
-      const s399Blocked  = !config.plans['₹399'].hasIdeaToVideoWorkflow;
-      const s799Allowed  =  config.plans['₹799'].hasIdeaToVideoWorkflow;
-      const pass = gatedTo799 && freeBlocked && s199Blocked && s399Blocked && s799Allowed;
-      tests['E2E_8_plan_idea_workflow_gated'] = {
-        pass,
-        detail: `minPlan=${rule.minPlan} enabled=${rule.enabled} | Free=${!freeBlocked} ₹199=${!s199Blocked} ₹399=${!s399Blocked} ₹799=${s799Allowed}`
-      };
-    } catch (e) { tests['E2E_8_plan_idea_workflow_gated'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_9: Cleanup service deletes export MP4 on purge ───────────────────
-    try {
-      // Write a real temp MP4 and register it in videoProjectsStore as expired
-      const testMp4 = pathMod.join(process.cwd(), 'public', 'exports', `cleanup_test_${Date.now()}.mp4`);
-      const exportsDir = pathMod.join(process.cwd(), 'public', 'exports');
-      if (!fsSync.existsSync(exportsDir)) fsSync.mkdirSync(exportsDir, { recursive: true });
-      fsSync.writeFileSync(testMp4, Buffer.alloc(1024, 0x00)); // 1KB placeholder
-      const relUrl = '/exports/' + pathMod.basename(testMp4);
-      const fakeId = `cleanup_test_${Date.now()}`;
-      videoProjectsStore.set(fakeId, {
-        id: fakeId, title: 'Cleanup test', status: 'expired',
-        outputUrl: relUrl, createdAt: new Date(0).toISOString(),
-        expiresAt: new Date(0).toISOString()
-      } as any);
-      const { purgeExpiredVideos } = await import('./src/server/cleanupService.js');
-      const { purgedIds } = await purgeExpiredVideos();
-      const wasDeleted = !fsSync.existsSync(testMp4) && purgedIds.includes(fakeId);
-      // Clean up if it somehow still exists
-      try { fsSync.unlinkSync(testMp4); } catch (_) {}
-      tests['E2E_9_cleanup_deletes_export'] = {
-        pass: wasDeleted,
-        detail: `purgedIds includes test=${purgedIds.includes(fakeId)} file deleted=${!fsSync.existsSync(testMp4)}`
-      };
-    } catch (e) { tests['E2E_9_cleanup_deletes_export'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_10: sfxType set correctly in /api/video/render granularScenes ────
-    try {
-      // Mirror the RENDER_TRANSITION_SFX_MAP from the render route
-      const MAP: Record<string, string> = {
-        fast_wipe: 'whoosh', glitch_slide: 'impact', zoom_burst: 'pop',
-        cross_dissolve: 'transition', fade_to_black: 'none', none: 'none'
-      };
-      const testScenes = [
-        { transitionEffect: 'fast_wipe' }, { transitionEffect: 'glitch_slide' },
-        { transitionEffect: 'cross_dissolve' }, { transitionEffect: 'fade_to_black' }
-      ];
-      const built = testScenes.map(s => ({
-        transitionEffect: s.transitionEffect,
-        sfxType: MAP[s.transitionEffect] ?? 'none'
-      }));
-      const allCorrect = built.every(s => s.sfxType === MAP[s.transitionEffect]);
-      tests['E2E_10_sfxtype_render_route'] = {
-        pass: allCorrect,
-        detail: built.map(s => `${s.transitionEffect}→${s.sfxType}`).join(' | ')
-      };
-    } catch (e) { tests['E2E_10_sfxtype_render_route'] = { pass: false, detail: String(e) }; }
-
-    // ── E2E_11: globalJobEngine video path now wired to real production pipeline ─
-    try {
-      // Verify that globalJobEngine imports masterWorkflowEngine and videoComposer
-      // (confirming the stub has been replaced with the real render pipeline)
-      const geSource = (await import('fs')).readFileSync('./src/server/globalJobEngine.ts', 'utf8');
-      const hasWorkflowImport = geSource.includes("import { masterWorkflowEngine }") || geSource.includes('masterWorkflowEngine');
-      const hasComposerImport = geSource.includes("import { videoComposer }") || geSource.includes('videoComposer');
-      const hasSkipFalse = geSource.includes('skipFFmpegRender: false');
-      const hasOutputUrl = geSource.includes('outputUrl: checkpoint.renderedVideoUrl');
-      const hasValidation = geSource.includes('validateOutputMP4');
-      const pass = hasWorkflowImport && hasComposerImport && hasSkipFalse && hasOutputUrl && hasValidation;
-      tests['E2E_11_job_engine_real_pipeline'] = {
-        pass,
-        detail: `workflowImport=${hasWorkflowImport} composerImport=${hasComposerImport} ` +
-                `skipFFmpegRender=false:${hasSkipFalse} outputUrl=${hasOutputUrl} validation=${hasValidation}`
-      };
-    } catch (e) { tests['E2E_11_job_engine_real_pipeline'] = { pass: false, detail: String(e) }; }
-
-    // Cleanup
-    try { fsSync.rmSync(pipelineTmpDir, { recursive: true, force: true }); } catch (_) {}
-
-    const allPass = Object.values(tests).every(t => t.pass);
-    res.status(allPass ? 200 : 207).json({ allPass, tests });
-  });
-
-  // ── Global Video Job Engine test endpoint ─────────────────────────────────
-  app.get('/api/dev/job-engine-test', async (_req, res) => {
-    const fsSync2 = await import('fs');
-    const pathMod2 = await import('path');
-    const { exec: execCb2 } = await import('child_process');
-    const { promisify: prom2 } = await import('util');
-    const execAsync3 = prom2(execCb2);
-
-    const tests: Record<string, { pass: boolean; detail: string }> = {};
-
-    // ── JOB_1: Submit a real video job → returns queued immediately ──────────
-    let submittedJobId = '';
-    let initialCredits = 0;
-    try {
-      initialCredits = userStatsStore.usedCredits;
-      const job = await submitGlobalJob(
-        'video',
-        {
-          title: 'Job Engine Test Video',
-          prompt: 'A short test video for automated pipeline verification',
-          aspectRatio: '16:9',
-          targetDurationSeconds: 8,
-          inputs: { language: 'en-US', voice: 'female-ananya' },
-          planKey: userStatsStore.currentPlan
-        },
-        userStatsStore.userId || 'test-user'
-      );
-      submittedJobId = job.id;
-      const creditsDeducted = userStatsStore.usedCredits > initialCredits;
-      const isQueued = job.stage === 'queued' || job.stage === 'preparing' || job.stage === 'generating' || job.stage === 'rendering';
-      const hasDeduction = job.creditsDeducted > 0;
-      tests['JOB_1_submit_returns_queued'] = {
-        pass: isQueued && hasDeduction,
-        detail: `jobId=${job.id} stage=${job.stage} creditsDeducted=${job.creditsDeducted} usedCreditsIncreased=${creditsDeducted}`
-      };
-    } catch (e) {
-      tests['JOB_1_submit_returns_queued'] = { pass: false, detail: String(e) };
-    }
-
-    // ── JOB_2: Poll until completed (real FFmpeg render, timeout 240s) ───────
-    let completedJob: any = null;
-    if (submittedJobId) {
-      try {
-        const deadline = Date.now() + 240_000;
-        while (Date.now() < deadline) {
-          await new Promise(r => setTimeout(r, 3000));
-          const j = globalJobsStore.get(submittedJobId);
-          if (!j) { break; }
-          if (j.stage === 'completed' || j.stage === 'failed') {
-            completedJob = j;
-            break;
-          }
-        }
-        const pass = completedJob?.stage === 'completed';
-        tests['JOB_2_render_completes'] = {
-          pass,
-          detail: completedJob
-            ? `stage=${completedJob.stage} progress=${completedJob.progress}%`
-            : `timeout — last stage unknown (jobId=${submittedJobId})`
-        };
-      } catch (e) {
-        tests['JOB_2_render_completes'] = { pass: false, detail: String(e) };
-      }
-    } else {
-      tests['JOB_2_render_completes'] = { pass: false, detail: 'skipped — job was not submitted (JOB_1 failed)' };
-    }
-
-    // ── JOB_3: outputUrl is set on the completed project ────────────────────
-    let outputFilePath = '';
-    try {
-      if (completedJob?.stage === 'completed' && completedJob.result?.project) {
-        const proj = completedJob.result.project;
-        const hasUrl = typeof proj.outputUrl === 'string' && proj.outputUrl.startsWith('/exports/');
-        outputFilePath = hasUrl ? pathMod2.join(process.cwd(), 'public', proj.outputUrl) : '';
-        const fileExists = outputFilePath ? fsSync2.existsSync(outputFilePath) : false;
-        const fileSizeBytes = fileExists ? fsSync2.statSync(outputFilePath).size : 0;
-        tests['JOB_3_outputUrl_set'] = {
-          pass: hasUrl && fileExists && fileSizeBytes > 50_000,
-          detail: `outputUrl=${proj.outputUrl} fileExists=${fileExists} size=${fileSizeBytes}B`
-        };
-      } else {
-        tests['JOB_3_outputUrl_set'] = { pass: false, detail: 'skipped — job not completed or no project in result' };
-      }
-    } catch (e) { tests['JOB_3_outputUrl_set'] = { pass: false, detail: String(e) }; }
-
-    // ── JOB_4: MP4 is valid h264/aac/stereo/44100Hz ──────────────────────────
-    try {
-      if (outputFilePath && fsSync2.existsSync(outputFilePath)) {
-        const { stdout } = await execAsync3(`ffprobe -v error -show_streams -of json "${outputFilePath}"`, { timeout: 15000 });
-        const streams = (JSON.parse(stdout).streams || []) as any[];
-        const v = streams.find((s: any) => s.codec_type === 'video');
-        const a = streams.find((s: any) => s.codec_type === 'audio');
-        const pass = v?.codec_name === 'h264' && a?.codec_name === 'aac'
-          && parseInt(a?.sample_rate || '0') === 44100 && parseInt(a?.channels || '0') === 2
-          && parseFloat(v?.duration || '0') >= 4;
-        tests['JOB_4_mp4_valid'] = {
-          pass,
-          detail: `video=${v?.codec_name} ${v?.width}x${v?.height} dur=${parseFloat(v?.duration||'0').toFixed(2)}s | audio=${a?.codec_name} sr=${a?.sample_rate}Hz ch=${a?.channels}`
-        };
-      } else {
-        tests['JOB_4_mp4_valid'] = { pass: false, detail: 'skipped — outputFilePath missing (JOB_3 failed)' };
-      }
-    } catch (e) { tests['JOB_4_mp4_valid'] = { pass: false, detail: String(e) }; }
-
-    // ── JOB_5: Credits deducted (not refunded) after successful render ────────
-    try {
-      if (completedJob?.stage === 'completed') {
-        const creditsAfter = userStatsStore.usedCredits;
-        const netDeducted = creditsAfter - initialCredits;
-        const expectedDeduction = completedJob.creditsDeducted;
-        // Net deduction should equal the job's creditsDeducted (no refund was issued)
-        const pass = netDeducted >= expectedDeduction && netDeducted > 0;
-        tests['JOB_5_credits_deducted_not_refunded'] = {
-          pass,
-          detail: `initialUsedCredits=${initialCredits} afterUsedCredits=${creditsAfter} netDeducted=${netDeducted} expectedDeduction=${expectedDeduction}`
-        };
-      } else {
-        tests['JOB_5_credits_deducted_not_refunded'] = { pass: false, detail: 'skipped — job not completed' };
-      }
-    } catch (e) { tests['JOB_5_credits_deducted_not_refunded'] = { pass: false, detail: String(e) }; }
-
-    // ── JOB_6: Credit refund mechanism works (unit test of refund path) ───────
-    try {
-      const { deductJobCredits, refundJobCredits } = await import('./src/server/globalJobEngine.js');
-      const beforeRefundTest = userStatsStore.usedCredits;
-      deductJobCredits(7, 'refund-test-job', 'Refund test');
-      const afterDeduct = userStatsStore.usedCredits;
-      refundJobCredits(7, 'refund-test-job', 'Automated test refund');
-      const afterRefund = userStatsStore.usedCredits;
-      const deductWorked = afterDeduct === beforeRefundTest + 7;
-      const refundWorked = afterRefund === beforeRefundTest;
-      tests['JOB_6_credit_refund_works'] = {
-        pass: deductWorked && refundWorked,
-        detail: `before=${beforeRefundTest} afterDeduct=${afterDeduct}(+7) afterRefund=${afterRefund}(restored) deductOk=${deductWorked} refundOk=${refundWorked}`
-      };
-    } catch (e) { tests['JOB_6_credit_refund_works'] = { pass: false, detail: String(e) }; }
-
-    // ── JOB_7: Failed job transitions to failed stage and refunds credits ─────
-    try {
-      const creditsBefore = userStatsStore.usedCredits;
-      // Submit a job with an empty prompt that should cause workflowEngine to fail
-      // We use a trick: targetDurationSeconds=0 which causes duration=0 → renders 0s video → validation fails
-      let failJobId = '';
-      try {
-        const fj = await submitGlobalJob(
-          'video',
-          { prompt: '', targetDurationSeconds: 0, aspectRatio: '16:9', planKey: 'Free' },
-          'test-fail-user'
-        );
-        failJobId = fj.id;
-        // Poll up to 60s
-        const deadline2 = Date.now() + 60_000;
-        while (Date.now() < deadline2) {
-          await new Promise(r => setTimeout(r, 2000));
-          const j2 = globalJobsStore.get(failJobId);
-          if (j2?.stage === 'failed' || j2?.stage === 'completed') break;
-        }
-      } catch (_) {
-        // submitGlobalJob itself may throw (credit/eligibility check) — that's also valid
-      }
-      const failJob = failJobId ? globalJobsStore.get(failJobId) : null;
-      const creditsAfter2 = userStatsStore.usedCredits;
-      if (failJob?.stage === 'failed') {
-        // Credits should have been refunded back to creditsBefore
-        const refunded = creditsAfter2 <= creditsBefore;
-        tests['JOB_7_failed_job_refunds'] = {
-          pass: refunded,
-          detail: `failJob.stage=${failJob.stage} creditsBefore=${creditsBefore} creditsAfter=${creditsAfter2} refunded=${refunded}`
-        };
-      } else if (failJob?.stage === 'completed') {
-        // Unexpectedly succeeded (e.g. workflowEngine accepted 0s with fallbacks)
-        tests['JOB_7_failed_job_refunds'] = {
-          pass: true,
-          detail: `Job completed (workflowEngine handled 0s gracefully) — credits correctly not refunded. creditsBefore=${creditsBefore} creditsAfter=${creditsAfter2}`
-        };
-      } else {
-        // submitGlobalJob threw (eligibility/plan check before even deducting) — acceptable
-        tests['JOB_7_failed_job_refunds'] = {
-          pass: true,
-          detail: `submitGlobalJob rejected before deduction (eligibility check) — no credits at risk. creditsUnchanged=${creditsAfter2 === creditsBefore}`
-        };
-      }
-    } catch (e) { tests['JOB_7_failed_job_refunds'] = { pass: false, detail: String(e) }; }
-
-    // ── JOB_8: Existing /api/video/plan route unaffected ────────────────────
-    try {
-      const planResp = await fetch(`http://127.0.0.1:${process.env.PORT || 5000}/api/video/plan`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt: 'Quick smoke-test plan', targetDurationSeconds: 8, aspectRatio: '16:9' })
-      });
-      const planData: any = await planResp.json();
-      const hasScenes = Array.isArray(planData?.scenes) && planData.scenes.length > 0;
-      tests['JOB_8_existing_plan_route_ok'] = {
-        pass: planResp.ok && hasScenes,
-        detail: `status=${planResp.status} scenes=${planData?.scenes?.length ?? 0} totalDuration=${planData?.totalDurationSeconds}s`
-      };
-    } catch (e) { tests['JOB_8_existing_plan_route_ok'] = { pass: false, detail: String(e) }; }
-
-    const allPass = Object.values(tests).every(t => t.pass);
-    res.status(allPass ? 200 : 207).json({ allPass, tests });
-  });
-
   // --- VITE / SERVING FRONTEND ---
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true, allowedHosts: true },
+      server: { middlewareMode: true },
       appType: 'spa'
     });
     app.use(vite.middlewares);

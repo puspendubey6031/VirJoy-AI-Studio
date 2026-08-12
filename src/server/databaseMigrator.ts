@@ -30,6 +30,26 @@ export interface MigrationResult {
   messages: string[];
 }
 
+let hasMigrated = false;
+
+export async function runOneTimeMigration(force = false): Promise<MigrationResult & { alreadyMigrated?: boolean }> {
+  if (hasMigrated && !force) {
+    return {
+      success: true,
+      alreadyMigrated: true,
+      timestamp: new Date().toISOString(),
+      updatedTables: [],
+      updatedPlans: [],
+      updatedCreditRules: [],
+      migratedUsersCount: 0,
+      messages: ['Database migration was already executed during this runtime instance.']
+    };
+  }
+  const result = await runFullDatabaseMigration();
+  hasMigrated = true;
+  return result;
+}
+
 export async function runFullDatabaseMigration(): Promise<MigrationResult> {
   const timestamp = new Date().toISOString();
   const messages: string[] = [];
@@ -279,9 +299,7 @@ export async function runFullDatabaseMigration(): Promise<MigrationResult> {
           id: 'app_config',
           created_at: timestamp
         });
-      } catch {
-        // settings upsert is non-critical; ignore errors
-      }
+      } catch (e) {}
 
       updatedTables.push({
         name: 'settings',
@@ -329,7 +347,7 @@ export async function runFullDatabaseMigration(): Promise<MigrationResult> {
   const updatedConfig = configStore.update({
     plans: officialPlans,
     subscriptionLockConfig: {
-      lockModal: defaultConfig.subscriptionLockConfig!.lockModal,
+      lockModal: defaultConfig.subscriptionLockConfig.lockModal,
       credits: {
         creditsPerVideo: 5,
         creditsPer10Seconds: 2,

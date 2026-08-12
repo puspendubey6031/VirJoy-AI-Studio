@@ -1,6 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import type { PromptIntelligenceResult } from './types.js';
-import { runProviderWithTimeout } from '../providers/providerFallback.js';
 
 export async function analyzePromptIntelligence(
   prompt: string,
@@ -8,22 +7,17 @@ export async function analyzePromptIntelligence(
   apiKey?: string
 ): Promise<PromptIntelligenceResult> {
   const geminiKey = apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-
+  // If Gemini API Key is available, use Gemini for structured JSON extraction
   if (geminiKey) {
     try {
-      // Enforce a 30-second timeout on the Gemini call and log the attempt
-      const parsed = await runProviderWithTimeout(
-        'Gemini',
-        'prompt-intelligence',
-        async () => {
-          const ai = new GoogleGenAI({
-            apiKey: geminiKey,
-            httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-          });
+      const ai = new GoogleGenAI({
+        apiKey: geminiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      });
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: `Perform deep prompt intelligence analysis for an AI Video Generation Engine (VirJoy AI).
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.0-flash',
+        contents: `Perform deep prompt intelligence analysis for an AI Video Generation Engine (VirJoy AI).
 User Prompt: "${prompt}"
 User Requested Duration (optional): ${targetDurationSeconds || 'Auto-detect'}
 
@@ -39,57 +33,62 @@ Analyze and return JSON with:
 9. recommendedSceneCount (number between 2 and 10)
 10. extractedKeywords (array of 4 key strings)
 11. suggestedMusicMood ("upbeat_electronic", "cinematic_synth", "ambient_chill", "dark_dramatic", "acoustic_warm")`,
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  detectedLanguage: { type: Type.STRING },
-                  category: { type: Type.STRING },
-                  tone: { type: Type.STRING },
-                  emotion: { type: Type.STRING },
-                  visualStyle: { type: Type.STRING },
-                  targetAudience: { type: Type.STRING },
-                  targetPlatform: { type: Type.STRING },
-                  recommendedDurationSeconds: { type: Type.NUMBER },
-                  recommendedSceneCount: { type: Type.NUMBER },
-                  extractedKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
-                  suggestedMusicMood: { type: Type.STRING }
-                },
-                required: [
-                  'detectedLanguage', 'category', 'tone', 'emotion', 'visualStyle',
-                  'targetAudience', 'targetPlatform', 'recommendedDurationSeconds',
-                  'recommendedSceneCount', 'extractedKeywords', 'suggestedMusicMood'
-                ]
-              }
-            }
-          });
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              detectedLanguage: { type: Type.STRING },
+              category: { type: Type.STRING },
+              tone: { type: Type.STRING },
+              emotion: { type: Type.STRING },
+              visualStyle: { type: Type.STRING },
+              targetAudience: { type: Type.STRING },
+              targetPlatform: { type: Type.STRING },
+              recommendedDurationSeconds: { type: Type.NUMBER },
+              recommendedSceneCount: { type: Type.NUMBER },
+              extractedKeywords: { type: Type.ARRAY, items: { type: Type.STRING } },
+              suggestedMusicMood: { type: Type.STRING }
+            },
+            required: [
+              'detectedLanguage',
+              'category',
+              'tone',
+              'emotion',
+              'visualStyle',
+              'targetAudience',
+              'targetPlatform',
+              'recommendedDurationSeconds',
+              'recommendedSceneCount',
+              'extractedKeywords',
+              'suggestedMusicMood'
+            ]
+          }
+        }
+      });
 
-          if (!response.text) throw new Error('Gemini returned empty response');
-          return JSON.parse(response.text);
-        },
-        30_000
-      );
-
-      return {
-        detectedLanguage: parsed.detectedLanguage || 'English',
-        category: validateEnum(parsed.category, ['Commercial', 'Educational', 'Reel/Short', 'SaaS Explainer', 'Storytelling', 'Product Showcase', 'Entertainment'], 'Reel/Short'),
-        tone: validateEnum(parsed.tone, ['Energetic', 'Cinematic', 'Professional', 'Casual', 'Dramatic', 'Inspirational', 'Humorous'], 'Energetic'),
-        emotion: validateEnum(parsed.emotion, ['Excited', 'Calm', 'Urgent', 'Warm', 'Mysterious', 'Confident'], 'Excited'),
-        visualStyle: validateEnum(parsed.visualStyle, ['3D Render', 'Cinematic Live Action', 'Minimalist Animated', 'Neon Cyberpunk', 'Documentary', 'Isometric'], 'Cinematic Live Action'),
-        targetAudience: parsed.targetAudience || 'Digital Creators & Social Media Audience',
-        targetPlatform: validateEnum(parsed.targetPlatform, ['Instagram Reels', 'TikTok', 'YouTube Shorts', 'YouTube 16:9', 'LinkedIn', 'Universal'], 'Instagram Reels'),
-        recommendedDurationSeconds: targetDurationSeconds || parsed.recommendedDurationSeconds || 30,
-        recommendedSceneCount: Math.max(2, Math.min(10, parsed.recommendedSceneCount || 4)),
-        extractedKeywords: parsed.extractedKeywords || ['VirJoy AI', 'Video Creation', 'Cinematic'],
-        suggestedMusicMood: validateEnum(parsed.suggestedMusicMood, ['upbeat_electronic', 'cinematic_synth', 'ambient_chill', 'dark_dramatic', 'acoustic_warm'], 'cinematic_synth')
-      };
+      if (response.text) {
+        const parsed = JSON.parse(response.text);
+        return {
+          detectedLanguage: parsed.detectedLanguage || 'English',
+          category: validateEnum(parsed.category, ['Commercial', 'Educational', 'Reel/Short', 'SaaS Explainer', 'Storytelling', 'Product Showcase', 'Entertainment'], 'Reel/Short'),
+          tone: validateEnum(parsed.tone, ['Energetic', 'Cinematic', 'Professional', 'Casual', 'Dramatic', 'Inspirational', 'Humorous'], 'Energetic'),
+          emotion: validateEnum(parsed.emotion, ['Excited', 'Calm', 'Urgent', 'Warm', 'Mysterious', 'Confident'], 'Excited'),
+          visualStyle: validateEnum(parsed.visualStyle, ['3D Render', 'Cinematic Live Action', 'Minimalist Animated', 'Neon Cyberpunk', 'Documentary', 'Isometric'], 'Cinematic Live Action'),
+          targetAudience: parsed.targetAudience || 'Digital Creators & Social Media Audience',
+          targetPlatform: validateEnum(parsed.targetPlatform, ['Instagram Reels', 'TikTok', 'YouTube Shorts', 'YouTube 16:9', 'LinkedIn', 'Universal'], 'Instagram Reels'),
+          recommendedDurationSeconds: targetDurationSeconds || parsed.recommendedDurationSeconds || 30,
+          recommendedSceneCount: Math.max(2, Math.min(10, parsed.recommendedSceneCount || 4)),
+          extractedKeywords: parsed.extractedKeywords || ['VirJoy AI', 'Video Creation', 'Cinematic'],
+          suggestedMusicMood: validateEnum(parsed.suggestedMusicMood, ['upbeat_electronic', 'cinematic_synth', 'ambient_chill', 'dark_dramatic', 'acoustic_warm'], 'cinematic_synth')
+        };
+      }
     } catch (err) {
-      console.warn('[PromptIntelligence] Gemini failed, using rule engine:', err instanceof Error ? err.message : err);
+      console.warn('Prompt Intelligence AI failed, using intelligent rule engine:', err);
     }
   }
 
-  // ── Intelligent Fallback Rule Engine ────────────────────────────────────────
+  // Intelligent Fallback Rule Engine
   const pLower = prompt.toLowerCase();
   const duration = targetDurationSeconds || (pLower.includes('short') ? 15 : pLower.includes('long') ? 60 : 30);
   const sceneCount = Math.max(2, Math.min(8, Math.round(duration / 7.5)));

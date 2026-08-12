@@ -1,5 +1,3 @@
-import path from 'path';
-import fs from 'fs';
 import type { GlobalAIJob, GlobalJobType, GlobalJobStage, AppConfig, PlanKey, DesignHistoryItem } from '../types.js';
 import { configStore, designProjectsStore, videoProjectsStore, userStatsStore } from './configStore.js';
 import { isOwnerEmail } from '../lib/roles.js';
@@ -8,8 +6,7 @@ import {
   generateSpeechWithFallback,
   generateVideoClipWithFallback
 } from './providers/index.js';
-import { masterWorkflowEngine } from './engine/workflowEngine.js';
-import { videoComposer } from './engine/videoComposer.js';
+import { planVideoWithAI } from './videoEngine.js';
 import { extractProductFromUrl } from './productExtractor.js';
 import { supabaseServer } from './supabaseServer.js';
 
@@ -266,7 +263,7 @@ export async function submitGlobalJob(jobType: GlobalJobType, params: any, userI
 // Initial ETA estimate in seconds based on job type
 function getInitialETA(jobType: GlobalJobType): number {
   const low = (jobType || '').toLowerCase();
-  if (low === 'video') return 120; // real pipeline: scene gen + media + BGM + SFX + FFmpeg
+  if (low === 'video') return 18;
   if (low === 'poster' || low === 'banner' || low === 'logo') return 8;
   if (low === 'voice' || low === 'subtitle') return 5;
   if (low === 'product_extraction') return 4;
@@ -315,58 +312,32 @@ async function executeJobPipeline(jobId: string) {
         prompt = 'Product commercial ad',
         inputs = {},
         aspectRatio = '16:9',
+        scenes = [],
         planKey = userStatsStore.currentPlan
       } = job.params;
 
-      if (!updateJobState('rendering', 55, 110, 'Running full AI video pipeline (scenes → BGM → SFX → FFmpeg render)...')) return;
+      // Update progress to Rendering
+      if (!updateJobState('rendering', 60, 6, 'Rendering high-definition scene frames & stitching timeline...')) return;
 
       const currentPlanConfig = config.plans[planKey] || config.plans.Free;
-      const totalDurationSeconds = job.params.scenes?.length > 0
-        ? (job.params.scenes as any[]).reduce((acc: number, s: any) => acc + (s.duration || 4), 0)
+      const totalDurationSeconds = scenes.length > 0
+        ? scenes.reduce((acc: number, s: any) => acc + (s.duration || 4), 0)
         : (job.params.targetDurationSeconds || 15);
 
-      const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-
-      // Run the verified production pipeline end-to-end:
-      // prompt analysis → script → scenes → media → voice → BGM → SFX → FFmpeg render → MP4
-      const checkpoint = await masterWorkflowEngine.runFullPipeline({
-        jobId,
-        userId: job.userId,
-        prompt,
-        targetDurationSeconds: totalDurationSeconds,
-        aspectRatio: aspectRatio as '16:9' | '9:16' | '1:1',
-        voice: inputs.voice || 'female-ananya',
-        language: inputs.language || 'en-US',
-        userUploads: inputs.userUploads || [],
-        planKey: planKey as any,
-        apiKey,
-        skipFFmpegRender: false  // real render — not a planning stub
-      });
-
-      // Check if the workflow itself reported a failure
-      if (checkpoint.currentStage === 'failed') {
-        const failedStage = Object.values(checkpoint.stageProgresses).find((s: any) => s.status === 'failed');
-        throw new Error(failedStage?.error || 'Video pipeline failed during processing');
+      let finalScenes = scenes;
+      if (finalScenes.length === 0) {
+        const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+        finalScenes = await planVideoWithAI({
+          prompt,
+          targetDurationSeconds: totalDurationSeconds,
+          aspectRatio,
+          inputs,
+          planKey: planKey as PlanKey
+        }, apiKey);
       }
 
-      // renderedVideoUrl must be set — workflowEngine sets it after executeFFmpegRender succeeds
-      if (!checkpoint.renderedVideoUrl) {
-        throw new Error('Video pipeline completed but produced no output file (renderedVideoUrl not set)');
-      }
-
-      if (!updateJobState('optimizing', 90, 5, 'Validating output MP4...')) return;
-
-      // Validate the real MP4 via ffprobe — never mark completed without this check
-      const outputFilePath = path.join(process.cwd(), 'public', checkpoint.renderedVideoUrl);
-      const validation = await videoComposer.validateOutputMP4(outputFilePath);
-      if (!validation.valid || validation.duration < 1) {
-        // Delete the invalid/corrupt file before throwing so it doesn't linger
-        try { fs.unlinkSync(outputFilePath); } catch (_) {}
-        throw new Error(
-          `MP4 validation failed: valid=${validation.valid} hasVideo=${validation.hasVideo} ` +
-          `hasAudio=${validation.hasAudio} duration=${validation.duration.toFixed(2)}s`
-        );
-      }
+      await delay(500);
+      if (!updateJobState('optimizing', 85, 3, 'Applying voiceovers, subtitles & color optimization...')) return;
 
       const retentionHours = config.retention.retentionHours || 24;
       const createdAtDate = new Date();
@@ -383,9 +354,8 @@ async function executeJobPipeline(jobId: string) {
         language: inputs.language || 'en-US',
         voice: inputs.voice || 'female-ananya',
         voiceTone: inputs.voiceTone || 'Energetic',
-        scenes: (checkpoint as any).granularScenes || (checkpoint as any).scenes || [],
+        scenes: finalScenes,
         status: 'completed' as const,
-        outputUrl: checkpoint.renderedVideoUrl,  // real MP4 path under /exports/
         planUsed: planKey,
         watermarked: currentPlanConfig.hasWatermark,
         exportQuality: currentPlanConfig.exportQuality,

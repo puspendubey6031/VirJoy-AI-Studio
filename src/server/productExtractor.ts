@@ -25,7 +25,7 @@ Return a JSON object with:
 - description: a catchy 1-2 sentence tagline for video advertising`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-2.0-flash',
         contents: prompt,
         config: {
           responseMimeType: 'application/json',

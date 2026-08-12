@@ -1,29 +1,31 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import type { GranularSceneSpec, PromptIntelligenceResult } from './types.js';
-import { runProviderWithTimeout } from '../providers/providerFallback.js';
 
 const CAMERA_MOTIONS: GranularSceneSpec['cameraMotion'][] = [
-  'zoom_in', 'pan_right', 'drone_flyby', 'static_cinematic', 'pan_left', 'zoom_out', 'handheld_tilt'
-];
-const TRANSITIONS: GranularSceneSpec['transitionEffect'][] = [
-  'fast_wipe', 'cross_dissolve', 'glitch_slide', 'zoom_burst', 'fade_to_black'
-];
-const EFFECTS: GranularSceneSpec['visualEffect'][] = [
-  'cinematic_color_grade', 'neon_glow', 'particle_dust', 'lens_flare', 'vignette'
+  'zoom_in',
+  'pan_right',
+  'drone_flyby',
+  'static_cinematic',
+  'pan_left',
+  'zoom_out',
+  'handheld_tilt'
 ];
 
-/**
- * Maps each transitionEffect to an appropriate SFX type.
- * 'none' means no SFX is played at that transition.
- */
-const TRANSITION_SFX_MAP: Record<GranularSceneSpec['transitionEffect'], GranularSceneSpec['sfxType']> = {
-  'fast_wipe':     'whoosh',
-  'glitch_slide':  'impact',
-  'zoom_burst':    'pop',
-  'cross_dissolve':'transition',
-  'fade_to_black': 'none',
-  'none':          'none',
-};
+const TRANSITIONS: GranularSceneSpec['transitionEffect'][] = [
+  'fast_wipe',
+  'cross_dissolve',
+  'glitch_slide',
+  'zoom_burst',
+  'fade_to_black'
+];
+
+const EFFECTS: GranularSceneSpec['visualEffect'][] = [
+  'cinematic_color_grade',
+  'neon_glow',
+  'particle_dust',
+  'lens_flare',
+  'vignette'
+];
 
 export async function generateGranularScenes(
   prompt: string,
@@ -39,19 +41,14 @@ export async function generateGranularScenes(
 
   if (geminiKey) {
     try {
-      // Enforce a 30-second timeout on the Gemini call and log the attempt
-      const parsed = await runProviderWithTimeout(
-        'Gemini',
-        'scene-generator',
-        async () => {
-          const ai = new GoogleGenAI({
-            apiKey: geminiKey,
-            httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-          });
+      const ai = new GoogleGenAI({
+        apiKey: geminiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      });
 
-          const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: `Break down this script into ${sceneCount} high-impact video scenes for VirJoy AI.
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.0-flash',
+        contents: `Break down this script into ${sceneCount} high-impact video scenes for VirJoy AI.
 Script: "${scriptText}"
 Visual Style: ${intelligence.visualStyle}
 Tone: ${intelligence.tone}
@@ -66,62 +63,70 @@ Each scene object:
 5. cameraMotion ("zoom_in", "pan_right", "drone_flyby", "static_cinematic", "pan_left", "zoom_out", "handheld_tilt")
 6. transitionEffect ("fast_wipe", "cross_dissolve", "glitch_slide", "zoom_burst", "fade_to_black")
 7. visualEffect ("cinematic_color_grade", "neon_glow", "particle_dust", "lens_flare", "vignette")`,
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    sceneNumber:      { type: Type.NUMBER },
-                    durationSeconds:  { type: Type.NUMBER },
-                    narrationText:    { type: Type.STRING },
-                    visualPrompt:     { type: Type.STRING },
-                    cameraMotion:     { type: Type.STRING },
-                    transitionEffect: { type: Type.STRING },
-                    visualEffect:     { type: Type.STRING }
-                  },
-                  required: ['sceneNumber', 'durationSeconds', 'narrationText', 'visualPrompt', 'cameraMotion', 'transitionEffect', 'visualEffect']
-                }
-              }
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                sceneNumber: { type: Type.NUMBER },
+                durationSeconds: { type: Type.NUMBER },
+                narrationText: { type: Type.STRING },
+                visualPrompt: { type: Type.STRING },
+                cameraMotion: { type: Type.STRING },
+                transitionEffect: { type: Type.STRING },
+                visualEffect: { type: Type.STRING }
+              },
+              required: [
+                'sceneNumber',
+                'durationSeconds',
+                'narrationText',
+                'visualPrompt',
+                'cameraMotion',
+                'transitionEffect',
+                'visualEffect'
+              ]
             }
-          });
-
-          if (!response.text) throw new Error('Gemini returned empty response');
-          return JSON.parse(response.text);
-        },
-        30_000
-      );
-
-      let currentTimeCursor = 0;
-      return parsed.map((s: any, idx: number) => {
-        const dur = s.durationSeconds || perSceneDuration;
-        const startTime = currentTimeCursor;
-        const endTime = currentTimeCursor + dur;
-        currentTimeCursor = endTime;
-
-        return {
-          sceneId: `scene_${idx + 1}_${Date.now()}`,
-          sceneNumber: idx + 1,
-          durationSeconds: dur,
-          narrationText: s.narrationText || prompt,
-          visualPrompt: s.visualPrompt || `Cinematic shot for ${prompt}`,
-          cameraMotion: validateList(s.cameraMotion, CAMERA_MOTIONS, CAMERA_MOTIONS[idx % CAMERA_MOTIONS.length]),
-          transitionEffect: validateList(s.transitionEffect, TRANSITIONS, TRANSITIONS[idx % TRANSITIONS.length]),
-          visualEffect: validateList(s.visualEffect, EFFECTS, EFFECTS[idx % EFFECTS.length]),
-          subtitleStartTime: startTime,
-          subtitleEndTime: endTime,
-          musicMood: intelligence.suggestedMusicMood,
-          sfxType: TRANSITION_SFX_MAP[validateList(s.transitionEffect, TRANSITIONS, TRANSITIONS[idx % TRANSITIONS.length])]
-        };
+          }
+        }
       });
+
+      if (response.text) {
+        const parsed = JSON.parse(response.text);
+        let currentTimeCursor = 0;
+
+        return parsed.map((s: any, idx: number) => {
+          const dur = s.durationSeconds || perSceneDuration;
+          const startTime = currentTimeCursor;
+          const endTime = currentTimeCursor + dur;
+          currentTimeCursor = endTime;
+
+          return {
+            sceneId: `scene_${idx + 1}_${Date.now()}`,
+            sceneNumber: idx + 1,
+            durationSeconds: dur,
+            narrationText: s.narrationText || prompt,
+            visualPrompt: s.visualPrompt || `Cinematic shot for ${prompt}`,
+            cameraMotion: validateList(s.cameraMotion, CAMERA_MOTIONS, CAMERA_MOTIONS[idx % CAMERA_MOTIONS.length]),
+            transitionEffect: validateList(s.transitionEffect, TRANSITIONS, TRANSITIONS[idx % TRANSITIONS.length]),
+            visualEffect: validateList(s.visualEffect, EFFECTS, EFFECTS[idx % EFFECTS.length]),
+            subtitleStartTime: startTime,
+            subtitleEndTime: endTime,
+            musicMood: intelligence.suggestedMusicMood
+          };
+        });
+      }
     } catch (err) {
-      console.warn('[SceneGenerator] Gemini failed, using modular scene builder:', err instanceof Error ? err.message : err);
+      console.warn('Scene Breakdown AI failed, using modular scene builder:', err);
     }
   }
 
-  // ── Fallback Modular Scene Builder ───────────────────────────────────────────
-  const sentences = scriptText.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length > 0);
+  // Fallback Modular Scene Builder
+  const sentences = scriptText
+    .split(/(?<=[.!?])\s+/)
+    .filter((s) => s.trim().length > 0);
+
   const finalScenes: GranularSceneSpec[] = [];
   let currentTimeCursor = 0;
 
@@ -143,8 +148,7 @@ Each scene object:
       visualEffect: EFFECTS[idx % EFFECTS.length],
       subtitleStartTime: startTime,
       subtitleEndTime: endTime,
-      musicMood: intelligence.suggestedMusicMood,
-      sfxType: TRANSITION_SFX_MAP[TRANSITIONS[idx % TRANSITIONS.length]]
+      musicMood: intelligence.suggestedMusicMood
     });
   }
 

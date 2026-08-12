@@ -1,5 +1,3 @@
-import fs from 'fs';
-import path from 'path';
 import { configStore, videoProjectsStore, designProjectsStore, userStatsStore } from './configStore.js';
 import { supabaseServer } from './supabaseServer.js';
 
@@ -29,12 +27,6 @@ export async function purgeExpiredVideos(): Promise<{ purgedCount: number; purge
 
     // If age exceeds retention period or status is explicitly expired
     if (ageMs > retentionMs || project.status === 'expired') {
-      // Delete the exported MP4 file from disk before removing the in-memory record
-      const outputUrl: string | undefined = (project as any).outputUrl;
-      if (outputUrl && outputUrl.startsWith('/exports/')) {
-        const filePath = path.join(process.cwd(), 'public', outputUrl);
-        try { fs.unlinkSync(filePath); } catch (_) {}
-      }
       videoProjectsStore.delete(id);
       purgedIds.push(id);
       purgedTitles.push(project.title);

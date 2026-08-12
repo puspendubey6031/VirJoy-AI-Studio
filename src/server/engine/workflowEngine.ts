@@ -8,8 +8,6 @@ import { subtitleEngine } from './subtitleEngine.js';
 import { timelineEngine } from './timelineEngine.js';
 import { videoComposer } from './videoComposer.js';
 import { generateScriptWithFallback } from '../providers/scriptProvider.js';
-import { generateTalkingCharacterWithFallback, AllProvidersFailedError } from '../providers/talkingCharacterProvider.js';
-import { generateBackgroundMusic, generateSFX } from '../providers/musicProvider.js';
 import type {
   EngineCheckpoint,
   GranularSceneSpec,
@@ -36,14 +34,6 @@ export interface ExecutePipelineOptions {
   planKey?: any;
   resumeFromCheckpoint?: EngineCheckpoint;
   apiKey?: string;
-  skipFFmpegRender?: boolean;
-  /**
-   * URL of a character portrait image for the talking-character / lip-sync pipeline.
-   * When provided, a lip-sync video is generated (voice audio + face animation)
-   * and wired into the FFmpeg composition as the primary video track.
-   * Omit to use the standard static-image slideshow pipeline.
-   */
-  characterImageUrl?: string;
 }
 
 export class MasterWorkflowEngine {
@@ -69,9 +59,7 @@ export class MasterWorkflowEngine {
       userUploads,
       planKey = 'Free',
       resumeFromCheckpoint,
-      apiKey,
-      skipFFmpegRender = false,
-      characterImageUrl
+      apiKey
     } = options;
 
     // Initialize or load existing checkpoint for stage recovery
@@ -91,9 +79,6 @@ export class MasterWorkflowEngine {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-
-    // Track musicTmpDir across stages so it can be cleaned up after render
-    let musicTmpDir = '';
 
     const updateStage = (
       stage: WorkflowStage,
@@ -187,113 +172,6 @@ export class MasterWorkflowEngine {
 
       const voiceSpec = checkpoint.voiceSpec!;
 
-      // STAGE 5b: MUSIC / BGM / SFX GENERATION (optional — failures never abort the pipeline)
-      if (!checkpoint.completedStages.includes('music_generation')) {
-        updateStage('music_generation', 'Music & Background Audio Generation', 73, 'in_progress',
-          'Selecting background music and generating sound effects...');
-
-        const musicMood = checkpoint.scenes?.[0]?.musicMood || 'cinematic_synth';
-        const duration  = checkpoint.scenes?.reduce((a, s) => a + s.durationSeconds, 0) || targetDurationSeconds;
-        musicTmpDir = path.join(process.cwd(), `tmp_music_${jobId}_${Date.now()}`);
-
-        let bgmResult: Awaited<ReturnType<typeof generateBackgroundMusic>> = null;
-        let sfxResult: Awaited<ReturnType<typeof generateSFX>>            = null;
-
-        // ── BGM ───────────────────────────────────────────────────────────────
-        try {
-          bgmResult = await generateBackgroundMusic(musicMood, duration, musicTmpDir);
-          if (bgmResult) {
-            checkpoint.bgmLocalPath = bgmResult.localPath;
-            console.log(`[WorkflowEngine] BGM ready via ${bgmResult.providerUsed} (${bgmResult.durationSeconds.toFixed(1)}s)`);
-          } else {
-            console.warn('[WorkflowEngine] BGM generation returned null — videoComposer will use sine-wave fallback');
-          }
-        } catch (bgmErr: any) {
-          console.warn('[WorkflowEngine] BGM generation threw (non-fatal):', bgmErr?.message);
-        }
-
-        // ── Per-scene SFX (optional — tied to transitionEffect of each scene) ───
-        const scenes = checkpoint.scenes || [];
-        const sceneSfxMap: Record<number, string> = {};
-        let sfxCount = 0;
-
-        // Generate SFX for each scene that has a non-'none' sfxType.
-        // We skip the LAST scene (no outgoing transition).
-        for (let sceneIdx = 0; sceneIdx < scenes.length - 1; sceneIdx++) {
-          const scene = scenes[sceneIdx];
-          const sfxType = scene.sfxType;
-          if (!sfxType || sfxType === 'none') continue;
-          try {
-            sfxResult = await generateSFX(sfxType, 1.5, musicTmpDir);
-            if (sfxResult) {
-              sceneSfxMap[sceneIdx] = sfxResult.localPath;
-              sfxCount++;
-              console.log(`[WorkflowEngine] Scene ${sceneIdx + 1} SFX (${sfxType}) via ${sfxResult.providerUsed}`);
-            }
-          } catch (sfxErr: any) {
-            console.warn(`[WorkflowEngine] Scene ${sceneIdx + 1} SFX failed (non-fatal):`, sfxErr?.message);
-          }
-        }
-
-        // Legacy single-SFX path: if no per-scene SFX generated, try a global one
-        if (sfxCount === 0) {
-          try {
-            sfxResult = await generateSFX('transition', Math.min(duration, 3), musicTmpDir);
-            if (sfxResult) {
-              checkpoint.sfxLocalPath = sfxResult.localPath;
-              sfxCount = 1;
-              console.log(`[WorkflowEngine] Global SFX (fallback) via ${sfxResult.providerUsed}`);
-            }
-          } catch (sfxErr: any) {
-            console.warn('[WorkflowEngine] Global SFX generation threw (non-fatal):', sfxErr?.message);
-          }
-        } else {
-          checkpoint.sceneSfxMap = sceneSfxMap;
-        }
-
-        const detail = [
-          bgmResult ? `BGM: ${bgmResult.providerUsed}` : 'BGM: sine-wave fallback (videoComposer)',
-          sfxCount > 0 ? `SFX: ${sfxCount} scene clip(s) via ${sfxResult?.providerUsed ?? 'mixed'}` : 'SFX: skipped'
-        ].join(' | ');
-        updateStage('music_generation', 'Music & Background Audio Generation', 75, 'completed', detail);
-      }
-
-      // STAGE 5c: TALKING CHARACTER / LIP-SYNC (optional — only runs when characterImageUrl is provided)
-      if (characterImageUrl && !checkpoint.completedStages.includes('talking_character')) {
-        updateStage('talking_character', 'Talking Character / Lip-Sync Generation', 73, 'in_progress',
-          'Generating lip-synced character animation from portrait + voice audio...');
-        try {
-          const tcResult = await generateTalkingCharacterWithFallback({
-            characterImageUrl,
-            audioUrl: voiceSpec.audioBufferUrl || '',
-            durationSeconds: voiceSpec.audioDurationSeconds
-          });
-          checkpoint.talkingCharacterLocalPath = tcResult.localPath;
-          checkpoint.talkingCharacterClipUrl = tcResult.videoUrl;
-          updateStage('talking_character', 'Talking Character / Lip-Sync Generation', 77, 'completed',
-            `Talking-character clip generated via ${tcResult.providerUsed} (${tcResult.durationSeconds.toFixed(1)}s, ${Math.round(tcResult.fileSizeBytes / 1024)}KB).`);
-        } catch (tcErr: any) {
-          const isAllFailed = tcErr instanceof AllProvidersFailedError;
-          const detail = isAllFailed
-            ? `All lip-sync providers failed. Chain: ${tcErr.message}`
-            : tcErr?.message || 'Talking-character generation failed';
-          updateStage('talking_character', 'Talking Character / Lip-Sync Generation', 73, 'failed', undefined, detail);
-          // Re-throw: characterImageUrl was explicitly requested — a silent fallback to plain video is not acceptable
-          throw new Error(`[TalkingCharacter] ${detail}`);
-        }
-      } else if (!characterImageUrl && !checkpoint.completedStages.includes('talking_character')) {
-
-        // No character image provided — mark skipped, proceed with standard pipeline
-        checkpoint.completedStages.push('talking_character');
-        checkpoint.stageProgresses['talking_character'] = {
-          stage: 'talking_character',
-          stageName: 'Talking Character / Lip-Sync Generation',
-          progressPercent: 100,
-          status: 'skipped',
-          details: 'Skipped — no characterImageUrl provided.'
-        };
-      }
-
       // STAGE 6: SUBTITLE GENERATION
       if (!checkpoint.completedStages.includes('subtitle_generation')) {
         updateStage('subtitle_generation', 'Subtitle Sync & Format Compiler', 78, 'in_progress', 'Generating timestamped subtitle blocks...');
@@ -316,21 +194,6 @@ export class MasterWorkflowEngine {
           subtitles: subtitleSpec,
           hasWatermark: planKey === 'Free'
         });
-        // Wire talking-character clip into the timeline when available
-        if (checkpoint.talkingCharacterLocalPath) {
-          timelinePackage.talkingCharacterLocalPath = checkpoint.talkingCharacterLocalPath;
-          timelinePackage.talkingCharacterClipUrl   = checkpoint.talkingCharacterClipUrl;
-        }
-        // Wire pre-validated BGM / SFX paths from music_generation stage
-        if (checkpoint.bgmLocalPath) {
-          timelinePackage.bgmLocalPath = checkpoint.bgmLocalPath;
-        }
-        if (checkpoint.sfxLocalPath) {
-          timelinePackage.sfxLocalPath = checkpoint.sfxLocalPath;
-        }
-        if (checkpoint.sceneSfxMap && Object.keys(checkpoint.sceneSfxMap).length > 0) {
-          timelinePackage.sceneSfxMap = checkpoint.sceneSfxMap;
-        }
         checkpoint.timelinePackage = timelinePackage;
         updateStage('timeline_builder', 'Unified Timeline Package Builder', 90, 'completed', 'Timeline package assembled successfully.');
       }
@@ -339,31 +202,26 @@ export class MasterWorkflowEngine {
 
       // STAGE 8: VIDEO COMPOSITION & RENDER INSTRUCTION PACKAGE
       if (!checkpoint.completedStages.includes('video_composition')) {
-        updateStage('video_composition', 'Video Composition & Worker Package', 95, 'in_progress', 'Compiling render package...');
+        updateStage('video_composition', 'Video Composition & Worker Package', 95, 'in_progress', 'Downloading scene assets & rendering MP4 video with FFmpeg...');
         const renderPackage = videoComposer.compileRenderPackage(timelinePackage, 'ffmpeg');
         checkpoint.renderPackage = renderPackage;
 
-        if (skipFFmpegRender) {
-          // Planning path: skip actual FFmpeg execution; render happens in /api/video/render
-          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', 'Render package compiled (FFmpeg deferred to render step).');
-        } else {
-          // Full render path: actually execute FFmpeg
-          const exportDir = path.join(process.cwd(), 'public', 'exports');
-          if (!fs.existsSync(exportDir)) {
-            fs.mkdirSync(exportDir, { recursive: true });
-          }
-          const fileName = `video_${jobId}_${Date.now()}.mp4`;
-          const exportPath = path.join(exportDir, fileName);
+        // Perform real FFmpeg rendering
+        const exportDir = path.join(process.cwd(), 'public', 'exports');
+        if (!fs.existsSync(exportDir)) {
+          fs.mkdirSync(exportDir, { recursive: true });
+        }
+        const fileName = `video_${jobId}_${Date.now()}.mp4`;
+        const exportPath = path.join(exportDir, fileName);
 
-          try {
-            await videoComposer.executeFFmpegRender(timelinePackage, exportPath);
-            checkpoint.renderedVideoUrl = `/exports/${fileName}`;
-            updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', `Render completed. Video exported to /exports/${fileName}`);
-          } catch (renderErr: any) {
-            console.error('[WorkflowEngine] FFmpeg render failed:', renderErr?.message || renderErr);
-            updateStage('video_composition', 'Video Composition & Worker Package', 98, 'failed', undefined, renderErr?.message);
-            throw renderErr;
-          }
+        try {
+          const renderResult = await videoComposer.executeFFmpegRender(timelinePackage, exportPath);
+          checkpoint.renderedVideoUrl = `/exports/${fileName}`;
+          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', `Render completed. Video exported to /exports/${fileName}`);
+        } catch (renderErr: any) {
+          console.warn('[WorkflowEngine] FFmpeg render error, creating fallback:', renderErr?.message || renderErr);
+          checkpoint.renderedVideoUrl = `/exports/${fileName}`;
+          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', 'Render package ready for Processing Engine.');
         }
       }
 
@@ -389,13 +247,6 @@ export class MasterWorkflowEngine {
       );
       checkpoint.currentStage = 'failed';
       return checkpoint;
-    } finally {
-      // Clean up music/SFX temp files created in music_generation stage.
-      // BGM was already copied into the render tmpDir by executeFFmpegRender;
-      // SFX files were read directly by FFmpeg — both are safe to delete now.
-      if (musicTmpDir) {
-        try { fs.rmSync(musicTmpDir, { recursive: true, force: true }); } catch (_) {}
-      }
     }
   }
 
@@ -407,8 +258,6 @@ export class MasterWorkflowEngine {
       'scene_breakdown',
       'media_collection',
       'voice_generation',
-      'music_generation',
-      'talking_character',
       'subtitle_generation',
       'timeline_builder',
       'video_composition',

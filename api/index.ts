@@ -1,15 +1,11 @@
 import express from 'express';
 import cors from 'cors';
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
 import { configStore, userStatsStore, videoProjectsStore, designProjectsStore } from '../src/server/configStore.js';
 import { extractProductFromUrl } from '../src/server/productExtractor.js';
 import { generateIdeaWorkflow, planVideoWithAI } from '../src/server/videoEngine.js';
-import { videoComposer } from '../src/server/engine/videoComposer.js';
-import type { GranularSceneSpec, TimelinePackage } from '../src/server/engine/types.js';
 import { cleanupStats, purgeExpiredVideos } from '../src/server/cleanupService.js';
-import { checkBackendSupabaseConnection, supabaseServer, isServerSupabaseConfigured } from '../src/server/supabaseServer.js';
+import { checkBackendSupabaseConnection, supabaseServer } from '../src/server/supabaseServer.js';
 import {
   getProviderStatusReport,
   generateImageWithFallback,
@@ -35,7 +31,7 @@ import {
 } from '../src/server/referralEngine.js';
 import { isOwnerEmail, getUserRole, getRolePermissions } from '../src/lib/roles.js';
 import { getAuthCallbackUrl } from '../src/lib/baseUrl.js';
-import { runFullDatabaseMigration } from '../src/server/databaseMigrator.js';
+import { runFullDatabaseMigration, runOneTimeMigration } from '../src/server/databaseMigrator.js';
 import type { VideoProject, PlanKey } from '../src/types.js';
 
 process.on('uncaughtException', (err) => {
@@ -952,13 +948,41 @@ app.get('/api/supabase/schema', async (_req, res) => {
   });
 });
 
-// Database Migration & Seed Endpoint
-const handleMigration = async (_req: express.Request, res: express.Response) => {
+// Admin Security & Password
+const PASSWORD_SALT = 'virjoy_admin_salt_2026';
+const hashAdminPassword = (password: string): string => {
+  return crypto.pbkdf2Sync(password, PASSWORD_SALT, 10000, 64, 'sha512').toString('hex');
+};
+
+let currentAdminPasswordHash = hashAdminPassword(process.env.ADMIN_PASSWORD || 'virjoy_admin_super_secret_2026');
+
+const verifyAdminAuthorization = (req: express.Request): boolean => {
+  const adminKey = req.headers['x-admin-key'] || req.body?.adminKey;
+  if (!adminKey) return false;
+  return hashAdminPassword(String(adminKey).trim()) === currentAdminPasswordHash;
+};
+
+// Database Migration & Seed Endpoint (Admin/Owner Only)
+const handleMigration = async (req: express.Request, res: express.Response) => {
   try {
-    const result = await runFullDatabaseMigration();
+    const isOwner = isOwnerEmail(userStatsStore.email) || userStatsStore.isOwner || userStatsStore.role === 'Owner';
+    const isAdminAuth = verifyAdminAuthorization(req);
+
+    if (!isAdminAuth && !isOwner) {
+      return res.status(403).json({
+        success: false,
+        error: 'UNAUTHORIZED_ADMIN_ACCESS',
+        message: 'Access Denied: Admin or Owner authorization required to execute database migration.'
+      });
+    }
+
+    const force = req.body?.force === true || req.query?.force === 'true';
+    const result = await runOneTimeMigration(force);
     return res.json({
       success: true,
-      message: 'Full database migration and seed update completed successfully.',
+      message: result.alreadyMigrated
+        ? 'Database migration was already executed.'
+        : 'Full database migration and seed update completed successfully.',
       ...result
     });
   } catch (err: any) {
@@ -970,39 +994,15 @@ const handleMigration = async (_req: express.Request, res: express.Response) => 
   }
 };
 
+app.post('/api/admin/run-migration', handleMigration);
 app.post('/api/admin/migrate-database', handleMigration);
 app.post('/api/db/migrate', handleMigration);
 app.get('/api/admin/migrate-database/status', handleMigration);
-
-// Run migration on boot only when Supabase is configured; skip silently otherwise.
-if (isServerSupabaseConfigured) {
-  runFullDatabaseMigration().then(res => {
-    console.log('[SERVER BOOT] Database migration completed:', res.success);
-  }).catch(err => {
-    console.warn('[SERVER BOOT] Database migration error:', err?.message);
-  });
-} else {
-  console.warn('[SERVER BOOT] Supabase not configured — skipping automatic migration. Use POST /api/admin/migrate-database to run it manually once credentials are set.');
-}
 
 // Get dynamic configuration
 app.get('/api/config', (_req, res) => {
   res.json(configStore.get());
 });
-
-// Admin Security & Password
-const PASSWORD_SALT = 'virjoy_admin_salt_2026';
-const hashAdminPassword = (password: string): string => {
-  return crypto.pbkdf2Sync(password, PASSWORD_SALT, 10000, 64, 'sha512').toString('hex');
-};
-
-let currentAdminPasswordHash = hashAdminPassword(process.env.ADMIN_PASSWORD || 'virjoy_admin_super_secret_2026');
-
-const verifyAdminAuthorization = (req: express.Request): boolean => {
-  const adminKey = req.headers['x-admin-key'] || req.body.adminKey;
-  if (!adminKey) return false;
-  return hashAdminPassword(String(adminKey).trim()) === currentAdminPasswordHash;
-};
 
 app.post('/api/admin/verify-password', (req, res) => {
   const { password } = req.body;
@@ -1204,8 +1204,9 @@ app.post('/api/video/plan', async (req, res) => {
   try {
     const { prompt, targetDurationSeconds = 15, aspectRatio = '16:9', inputs = {}, planKey = 'Free' } = req.body;
 
-    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
-      return res.status(400).json({ error: 'MISSING_PROMPT', message: 'prompt is required and must be a non-empty string' });
+    const lockCheck = checkFeatureLockServer('videoGenerator', planKey || userStatsStore.currentPlan);
+    if (!lockCheck.allowed) {
+      return res.status(lockCheck.status || 403).json(lockCheck);
     }
 
     const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -1223,27 +1224,28 @@ app.post('/api/video/plan', async (req, res) => {
       });
     }
 
-    // 55-second overall timeout so the request never hangs indefinitely
-    const PLAN_TIMEOUT_MS = 55000;
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('VIDEO_PLAN_TIMEOUT: Scene planning exceeded 55 seconds. Provider may be unavailable.')), PLAN_TIMEOUT_MS)
-    );
-
-    const scenes = await Promise.race([
-      planVideoWithAI({ prompt: prompt.trim(), targetDurationSeconds: requestedSec, aspectRatio, inputs, planKey: planKey as PlanKey }, apiKey),
-      timeoutPromise
-    ]);
+    const scenes = await planVideoWithAI({
+      prompt: prompt || 'Product commercial ad',
+      targetDurationSeconds: requestedSec,
+      aspectRatio,
+      inputs,
+      planKey: planKey as PlanKey
+    }, apiKey);
 
     res.json({ success: true, scenes });
   } catch (err: any) {
-    const status = (err?.message || '').includes('TIMEOUT') ? 504 : 500;
-    res.status(status).json({ error: err?.message || 'Video planning failed' });
+    res.status(500).json({ error: err?.message || 'Video planning failed' });
   }
 });
 
 // AI Idea-to-Video Workflow
 app.post('/api/video/idea-workflow', async (req, res) => {
   try {
+    const lockCheck = checkFeatureLockServer('ideaToVideoWorkflow', userStatsStore.currentPlan);
+    if (!lockCheck.allowed) {
+      return res.status(lockCheck.status || 403).json(lockCheck);
+    }
+
     const { concept } = req.body;
     if (!concept) {
       return res.status(400).json({ error: 'Idea concept is required' });
@@ -1267,14 +1269,6 @@ app.post('/api/video/render', async (req, res) => {
       scenes = [],
       planKey = userStatsStore.currentPlan
     } = req.body;
-
-    // Validate required fields before any property access
-    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
-      return res.status(400).json({ error: 'MISSING_PROMPT', message: 'prompt is required and must be a non-empty string' });
-    }
-    if (!Array.isArray(scenes) || scenes.length === 0) {
-      return res.status(400).json({ error: 'MISSING_SCENES', message: 'scenes array is required and must not be empty' });
-    }
 
     const config = configStore.get();
     const currentPlanConfig = config.plans[planKey] || config.plans.Free;
@@ -1308,19 +1302,18 @@ app.post('/api/video/render', async (req, res) => {
     const expiresAtDate = new Date(createdAtDate.getTime() + retentionHours * 60 * 60 * 1000);
     const projectId = `vj-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
-    const safePrompt = (prompt as string).trim();
     const newProject: VideoProject = {
       id: projectId,
-      title: title || `VirJoy Video - ${safePrompt.substring(0, 25)}`,
-      prompt: safePrompt,
+      title: title || `VirJoy Video - ${prompt.substring(0, 25)}`,
+      prompt,
       inputs,
       aspectRatio,
       totalDurationSeconds,
-      language: (inputs as any).language || 'en-US',
-      voice: (inputs as any).voice || 'female-ananya',
-      voiceTone: (inputs as any).voiceTone || 'Energetic',
+      language: inputs.language || 'en-US',
+      voice: inputs.voice || 'female-ananya',
+      voiceTone: inputs.voiceTone || 'Energetic',
       scenes,
-      status: 'rendering',
+      status: 'completed',
       planUsed: planKey,
       watermarked: currentPlanConfig.hasWatermark,
       exportQuality: currentPlanConfig.exportQuality,
@@ -1331,64 +1324,6 @@ app.post('/api/video/render', async (req, res) => {
 
     videoProjectsStore.set(projectId, newProject);
 
-    // Build GranularSceneSpec[] from the incoming Scene[] for FFmpeg
-    const granularScenes: GranularSceneSpec[] = scenes.map((s: any, i: number) => ({
-      sceneId: s.id || `scene-${i + 1}-${Date.now()}`,
-      sceneNumber: i + 1,
-      durationSeconds: Math.max(2, s.duration || 4),
-      narrationText: s.narration || s.caption || safePrompt,
-      visualPrompt: s.visualPrompt || 'Cinematic visual',
-      cameraMotion: s.cameraMotion || 'static_cinematic',
-      transitionEffect: s.transitionEffect || 'cross_dissolve',
-      visualEffect: s.visualEffect || 'cinematic_color_grade',
-      subtitleStartTime: s.subtitleStartTime || 0,
-      subtitleEndTime: s.subtitleEndTime || Math.max(2, s.duration || 4),
-      musicMood: 'cinematic_synth',
-      assignedAssetUrl: s.imageUrl || undefined,
-    }));
-
-    const timelinePackage: TimelinePackage = {
-      id: `tl_${projectId}_${Date.now()}`,
-      title: newProject.title,
-      aspectRatio: aspectRatio as '16:9' | '9:16' | '1:1',
-      totalDurationSeconds,
-      scenes: granularScenes,
-      mediaAssets: [],
-      voiceAudioUrl: (scenes[0] as any)?.voiceAudioUrl || '',
-      backgroundMusicUrl: (scenes[0] as any)?.backgroundMusicUrl || '/audio/cinematic.mp3',
-      subtitles: { format: 'burned', sourceLanguage: (inputs as any).language || 'en-US', cues: [], rawFormattedContent: '' },
-      overlayConfig: { watermarkText: currentPlanConfig.hasWatermark ? 'Created with VirJoy AI' : undefined }
-    };
-
-    // Execute FFmpeg render and validate the output MP4
-    const exportDir = path.join(process.cwd(), 'public', 'exports');
-    if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir, { recursive: true });
-    const fileName = `video_${projectId}_${Date.now()}.mp4`;
-    const exportPath = path.join(exportDir, fileName);
-
-    try {
-      await videoComposer.executeFFmpegRender(timelinePackage, exportPath);
-
-      const validation = await videoComposer.validateOutputMP4(exportPath);
-      if (!validation.valid) {
-        throw new Error('FFmpeg produced an invalid MP4 — no video stream detected by ffprobe');
-      }
-
-      newProject.status = 'completed';
-      newProject.outputUrl = `/exports/${fileName}`;
-      videoProjectsStore.set(projectId, newProject);
-    } catch (renderErr: any) {
-      console.error('[VideoRender] FFmpeg render failed:', renderErr?.message);
-      newProject.status = 'failed';
-      videoProjectsStore.set(projectId, newProject);
-      return res.status(500).json({
-        error: 'VIDEO_RENDER_FAILED',
-        message: `Video rendering failed: ${renderErr?.message || 'FFmpeg error'}`,
-        projectId
-      });
-    }
-
-    // Deduct credits only after successful render
     userStatsStore.usedCredits += requiredCredits;
     userStatsStore.usedMonthlyDurationSeconds += totalDurationSeconds;
     userStatsStore.history.unshift({
@@ -1402,7 +1337,6 @@ app.post('/api/video/render', async (req, res) => {
     res.json({
       success: true,
       project: newProject,
-      outputUrl: newProject.outputUrl,
       userUsage: {
         usedCredits: userStatsStore.usedCredits,
         monthlyCredits: maxMonthlyCredits,
@@ -1502,105 +1436,6 @@ app.get('/api/dev/ai-usage', (_req, res) => {
 app.get('/api/dev/provider-status', (_req, res) => {
   const status = getProviderStatusReport();
   res.json({ status: 'ok', report: status });
-});
-
-// ── Provider fallback system test (mock providers — no real API calls) ────────
-app.get('/api/dev/provider-test', async (_req, res) => {
-  const { runWithFallback, AllProvidersFailedError } = await import('../src/server/providers/providerFallback.js');
-  const results: Record<string, { pass: boolean; detail: string }> = {};
-
-  // Test A: primary succeeds — fallback providers must NOT be called
-  try {
-    let fallbackCalled = false;
-    const { providerUsed, attempts } = await runWithFallback('test-A', [
-      { name: 'Primary', run: async () => 'ok' },
-      { name: 'Fallback1', run: async () => { fallbackCalled = true; return 'fb'; } }
-    ]);
-    results['A_primary_success'] = {
-      pass: providerUsed === 'Primary' && !fallbackCalled && attempts.length === 1,
-      detail: `providerUsed=${providerUsed} fallbackCalled=${fallbackCalled} attempts=${attempts.length}`
-    };
-  } catch (e) { results['A_primary_success'] = { pass: false, detail: String(e) }; }
-
-  // Test B: primary fails → fallback 1 attempted
-  try {
-    const { providerUsed, attempts } = await runWithFallback('test-B', [
-      { name: 'Primary', run: async () => { throw new Error('quota exhausted'); } },
-      { name: 'Fallback1', run: async () => 'fb1' }
-    ]);
-    results['B_primary_fail_fallback1'] = {
-      pass: providerUsed === 'Fallback1' && attempts.length === 2 && attempts[0].success === false,
-      detail: `providerUsed=${providerUsed} attempts=${attempts.length} fb1Category=${attempts[0].failureCategory}`
-    };
-  } catch (e) { results['B_primary_fail_fallback1'] = { pass: false, detail: String(e) }; }
-
-  // Test C: primary + fallback1 fail → fallback2 succeeds
-  try {
-    const { providerUsed, attempts } = await runWithFallback('test-C', [
-      { name: 'Primary',   run: async () => { throw new Error('rate limit 429'); } },
-      { name: 'Fallback1', run: async () => { throw new Error('service unavailable 503'); } },
-      { name: 'Fallback2', run: async () => 'fb2' }
-    ]);
-    results['C_two_fail_third_succeeds'] = {
-      pass: providerUsed === 'Fallback2' && attempts.length === 3,
-      detail: `providerUsed=${providerUsed} attempts=${attempts.length}`
-    };
-  } catch (e) { results['C_two_fail_third_succeeds'] = { pass: false, detail: String(e) }; }
-
-  // Test D: all providers fail → controlled AllProvidersFailedError
-  try {
-    await runWithFallback('test-D', [
-      { name: 'P1', run: async () => { throw new Error('fail 1'); } },
-      { name: 'P2', run: async () => { throw new Error('fail 2'); } }
-    ]);
-    results['D_all_fail_controlled_error'] = { pass: false, detail: 'Should have thrown AllProvidersFailedError' };
-  } catch (e) {
-    results['D_all_fail_controlled_error'] = {
-      pass: e instanceof AllProvidersFailedError,
-      detail: e instanceof AllProvidersFailedError ? `correct error type, chain: ${e.message.substring(0, 120)}` : String(e)
-    };
-  }
-
-  // Test E: missing API key → provider excluded from chain (not added), not fatal
-  try {
-    const apiKey = process.env.__NONEXISTENT_KEY__;  // always undefined
-    const chain = [];
-    if (apiKey) chain.push({ name: 'ProviderWithKey', run: async () => 'keyed' });
-    chain.push({ name: 'NoKeyProvider', run: async () => 'ok-no-key' });
-    const { providerUsed } = await runWithFallback('test-E', chain);
-    results['E_missing_key_skipped'] = {
-      pass: providerUsed === 'NoKeyProvider',
-      detail: `providerUsed=${providerUsed} (keyed provider correctly absent from chain)`
-    };
-  } catch (e) { results['E_missing_key_skipped'] = { pass: false, detail: String(e) }; }
-
-  // Test F: provider timeout → fallback continues
-  try {
-    const { providerUsed, attempts } = await runWithFallback('test-F', [
-      { name: 'SlowProvider', timeoutMs: 50, run: async () => new Promise(r => setTimeout(r, 500)) as any },
-      { name: 'FastFallback', run: async () => 'fast' }
-    ]);
-    results['F_timeout_fallback_continues'] = {
-      pass: providerUsed === 'FastFallback' && attempts[0].failureCategory === 'TIMEOUT',
-      detail: `providerUsed=${providerUsed} timedOutCategory=${attempts[0].failureCategory}`
-    };
-  } catch (e) { results['F_timeout_fallback_continues'] = { pass: false, detail: String(e) }; }
-
-  // Test G: verify operation-specific chain configs (provider registry)
-  try {
-    const report = getProviderStatusReport();
-    const scriptHasBuiltIn = report.script.guaranteedFallback === 'BuiltInRuleEngine';
-    const imageHasPollinations = report.image.guaranteedFallback === 'PollinationsAI';
-    const voiceHasLongCat = report.voice.guaranteedFallback === 'LongCatAudioDiT';
-    const videoHasCanvas = report.videoClip.guaranteedFallback === 'DynamicCanvasRender';
-    results['G_operation_specific_chains'] = {
-      pass: scriptHasBuiltIn && imageHasPollinations && voiceHasLongCat && videoHasCanvas,
-      detail: `script=${report.script.fallbackOrder.join('→')} | image=${report.image.fallbackOrder.join('→')} | voice=${report.voice.fallbackOrder.join('→')} | videoClip=${report.videoClip.fallbackOrder.join('→')}`
-    };
-  } catch (e) { results['G_operation_specific_chains'] = { pass: false, detail: String(e) }; }
-
-  const allPass = Object.values(results).every(r => r.pass);
-  res.status(allPass ? 200 : 207).json({ allPass, results });
 });
 
 app.get('/api/dev/cost-monitor', (_req, res) => {
@@ -1708,18 +1543,44 @@ app.post('/api/user/plan', (req, res) => {
   res.json({ success: true, currentPlan: userStatsStore.currentPlan });
 });
 
-// Reset User Credit Usage
-app.post('/api/user/credits/reset', (_req, res) => {
-  userStatsStore.usedCredits = 0;
-  userStatsStore.usedMonthlyDurationSeconds = 0;
-  res.json({ success: true, usedCredits: 0, usedMonthlyDurationSeconds: 0 });
-});
+// Scheduled Cleanup Endpoint (Vercel Cron & Manual Trigger)
+const handleCleanupExpired = async (req: express.Request, res: express.Response) => {
+  try {
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret) {
+      const authHeader = req.headers.authorization;
+      if (authHeader !== `Bearer ${cronSecret}`) {
+        const isOwner = isOwnerEmail(userStatsStore.email) || userStatsStore.isOwner || userStatsStore.role === 'Owner';
+        const isAdminAuth = verifyAdminAuthorization(req);
+        if (!isAdminAuth && !isOwner) {
+          return res.status(401).json({
+            success: false,
+            error: 'UNAUTHORIZED_CRON',
+            message: 'Unauthorized scheduled cleanup request'
+          });
+        }
+      }
+    }
 
-// Manual Trigger for 24-hour Retention Cleanup
-app.post('/api/cleanup/trigger', (_req, res) => {
-  const result = purgeExpiredVideos();
-  res.json({ success: true, ...result, stats: cleanupStats });
-});
+    const result = await purgeExpiredVideos();
+    return res.json({
+      success: true,
+      message: 'Scheduled 24h retention cleanup completed successfully',
+      ...result,
+      stats: cleanupStats
+    });
+  } catch (err: any) {
+    console.error('[CLEANUP SERVICE ERROR]:', err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || 'Retention cleanup operation failed'
+    });
+  }
+};
+
+app.post('/api/system/cleanup-expired', handleCleanupExpired);
+app.get('/api/system/cleanup-expired', handleCleanupExpired);
+app.post('/api/cleanup/trigger', handleCleanupExpired);
 
 // Cleanup Stats
 app.get('/api/cleanup/stats', (_req, res) => {

@@ -3,30 +3,6 @@ import type { PlanKey, Scene, VideoProject, VideoProjectInputs } from '../types.
 import { configStore } from './configStore.js';
 import { generateScriptWithFallback } from './providers/scriptProvider.js';
 import { masterWorkflowEngine } from './engine/workflowEngine.js';
-import { runWithFallback, type FallbackProvider } from './providers/providerFallback.js';
-import { generateTextWithOpenRouter, isOpenRouterConfigured } from './providers/openRouterProvider.js';
-
-// ── Private helper ────────────────────────────────────────────────────────────
-function _parseIdeaResult(parsed: any, concept: string): {
-  title: string; viralHooks: string[]; recommendedScript: string;
-  suggestedDuration: number; scenes: Scene[];
-} {
-  return {
-    title: parsed.title || 'AI Idea Video Project',
-    viralHooks: parsed.viralHooks || ['Hook 1: Did you know this secret?', 'Hook 2: Stop making this mistake!'],
-    recommendedScript: parsed.recommendedScript || concept,
-    suggestedDuration: parsed.suggestedDuration || 30,
-    scenes: (parsed.scenes || []).map((s: any, idx: number) => ({
-      id: `idea-scene-${idx + 1}`,
-      title: s.title || `Scene ${idx + 1}`,
-      duration: s.duration || 5,
-      narration: s.narration || concept,
-      caption: s.caption || s.narration,
-      visualPrompt: s.visualPrompt || 'Dynamic visual',
-      bgGradient: GRADIENTS[idx % GRADIENTS.length]
-    }))
-  };
-}
 
 const GRADIENTS = [
   'from-slate-900 via-indigo-950 to-slate-900',
@@ -45,7 +21,12 @@ interface PlanVideoOptions {
   planKey: PlanKey;
 }
 
-export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string): Promise<Scene[]> {
+export interface PlanVideoResult {
+  scenes: Scene[];
+  renderedVideoUrl?: string;
+}
+
+export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string): Promise<PlanVideoResult> {
   const { prompt, targetDurationSeconds, aspectRatio, inputs, planKey } = options;
 
   // Execute Phase 5 AI Video Generation Engine Pipeline
@@ -59,12 +40,11 @@ export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string
     language: inputs.language,
     userUploads: inputs.images,
     planKey,
-    apiKey: apiKey || process.env.GEMINI_API_KEY,
-    skipFFmpegRender: true   // planning does not need a rendered file
+    apiKey: apiKey || process.env.GEMINI_API_KEY
   });
 
   if (checkpoint.scenes && checkpoint.scenes.length > 0) {
-    return checkpoint.scenes.map((s, idx) => ({
+    const scenes = checkpoint.scenes.map((s, idx) => ({
       id: s.sceneId || `scene-${idx + 1}-${Date.now()}`,
       title: `Scene ${s.sceneNumber}: ${s.narrationText.substring(0, 25)}`,
       duration: Math.max(2, s.durationSeconds),
@@ -81,6 +61,11 @@ export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string
       voiceAudioUrl: checkpoint.voiceSpec?.audioBufferUrl,
       backgroundMusicUrl: checkpoint.timelinePackage?.backgroundMusicUrl
     }));
+
+    return {
+      scenes,
+      renderedVideoUrl: checkpoint.renderedVideoUrl
+    };
   }
 
   // Fallback to Provider Integration Layer
@@ -92,16 +77,18 @@ export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string
     planKey
   });
 
-  return scriptResult.scenes.map((s, idx) => ({
-    id: `scene-${idx + 1}-${Date.now()}`,
-    title: `Scene ${s.sceneNumber}: ${s.textOverlay || 'Frame'}`,
-    duration: Math.max(2, s.duration),
-    narration: s.voiceoverText || prompt,
-    caption: s.textOverlay || s.voiceoverText || 'VirJoy AI',
-    visualPrompt: s.visualDescription || s.imagePrompt || 'Cinematic visual',
-    bgGradient: GRADIENTS[idx % GRADIENTS.length],
-    imageUrl: inputs.images?.[idx % (inputs.images.length || 1)] || undefined
-  }));
+  return {
+    scenes: scriptResult.scenes.map((s, idx) => ({
+      id: `scene-${idx + 1}-${Date.now()}`,
+      title: `Scene ${s.sceneNumber}: ${s.textOverlay || 'Frame'}`,
+      duration: Math.max(2, s.duration),
+      narration: s.voiceoverText || prompt,
+      caption: s.textOverlay || s.voiceoverText || 'VirJoy AI',
+      visualPrompt: s.visualDescription || s.imagePrompt || 'Cinematic visual',
+      bgGradient: GRADIENTS[idx % GRADIENTS.length],
+      imageUrl: inputs.images?.[idx % (inputs.images.length || 1)] || undefined
+    }))
+  };
 }
 
 export async function generateIdeaWorkflow(concept: string, apiKey?: string): Promise<{
@@ -111,89 +98,76 @@ export async function generateIdeaWorkflow(concept: string, apiKey?: string): Pr
   suggestedDuration: number;
   scenes: Scene[];
 }> {
-  type IdeaResult = { title: string; viralHooks: string[]; recommendedScript: string; suggestedDuration: number; scenes: Scene[] };
-
-  const geminiKey = apiKey || process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-  const ideaPrompt = `You are a viral TikTok/Reels video creator for VirJoy AI.
-Take this creative idea concept: "${concept}".
-Generate and return JSON with:
-- title (string)
-- viralHooks (array of 3 strings)
-- recommendedScript (string)
-- suggestedDuration (number, 15-90)
-- scenes (array of 4 objects with: title, duration, narration, caption, visualPrompt)`;
-
-  const chain: FallbackProvider<IdeaResult>[] = [];
-
-  // 1. Gemini (structured schema)
-  if (geminiKey) {
-    chain.push({
-      name: 'Gemini',
-      timeoutMs: 30_000,
-      run: async () => {
-        const ai = new GoogleGenAI({ apiKey: geminiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: ideaPrompt,
-          config: {
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                viralHooks: { type: Type.ARRAY, items: { type: Type.STRING } },
-                recommendedScript: { type: Type.STRING },
-                suggestedDuration: { type: Type.NUMBER },
-                scenes: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      title: { type: Type.STRING }, duration: { type: Type.NUMBER },
-                      narration: { type: Type.STRING }, caption: { type: Type.STRING },
-                      visualPrompt: { type: Type.STRING }
-                    },
-                    required: ['title', 'duration', 'narration', 'caption', 'visualPrompt']
-                  }
-                }
-              },
-              required: ['title', 'viralHooks', 'recommendedScript', 'suggestedDuration', 'scenes']
-            }
-          }
-        });
-        if (!response.text) throw new Error('Gemini returned empty response');
-        return _parseIdeaResult(JSON.parse(response.text), concept);
-      }
-    });
-  }
-
-  // 2. OpenRouter (text operations)
-  if (isOpenRouterConfigured()) {
-    chain.push({
-      name: 'OpenRouter',
-      timeoutMs: 30_000,
-      run: async () => {
-        const { content } = await generateTextWithOpenRouter({
-          systemPrompt: 'You are a viral video creator. Return strictly valid JSON only, no markdown.',
-          userPrompt: ideaPrompt,
-          timeoutMs: 28_000
-        });
-        const cleaned = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-        return _parseIdeaResult(JSON.parse(cleaned), concept);
-      }
-    });
-  }
-
-  if (chain.length > 0) {
+  if (apiKey) {
     try {
-      const { result } = await runWithFallback<IdeaResult>('idea-workflow', chain, 30_000);
-      return result;
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      });
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.0-flash',
+        contents: `You are a viral TikTok/Reels video creator for the ₹799 Ultra Plan in VirJoy AI.
+Take this creative idea concept: "${concept}".
+Generate:
+1. Video Title
+2. 3 Viral Hook options
+3. Full voiceover script
+4. Suggested total duration (15 to 90 seconds)
+5. 4 structured video scenes (title, duration, narration, caption, visualPrompt)`,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              title: { type: Type.STRING },
+              viralHooks: { type: Type.ARRAY, items: { type: Type.STRING } },
+              recommendedScript: { type: Type.STRING },
+              suggestedDuration: { type: Type.NUMBER },
+              scenes: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    title: { type: Type.STRING },
+                    duration: { type: Type.NUMBER },
+                    narration: { type: Type.STRING },
+                    caption: { type: Type.STRING },
+                    visualPrompt: { type: Type.STRING }
+                  },
+                  required: ['title', 'duration', 'narration', 'caption', 'visualPrompt']
+                }
+              }
+            },
+            required: ['title', 'viralHooks', 'recommendedScript', 'suggestedDuration', 'scenes']
+          }
+        }
+      });
+
+      if (response.text) {
+        const parsed = JSON.parse(response.text);
+        return {
+          title: parsed.title || 'AI Idea Video Project',
+          viralHooks: parsed.viralHooks || ['Hook 1: Did you know this secret?', 'Hook 2: Stop making this mistake!'],
+          recommendedScript: parsed.recommendedScript || concept,
+          suggestedDuration: parsed.suggestedDuration || 30,
+          scenes: (parsed.scenes || []).map((s: any, idx: number) => ({
+            id: `idea-scene-${idx + 1}`,
+            title: s.title || `Scene ${idx + 1}`,
+            duration: s.duration || 5,
+            narration: s.narration || concept,
+            caption: s.caption || s.narration,
+            visualPrompt: s.visualPrompt || 'Dynamic visual',
+            bgGradient: GRADIENTS[idx % GRADIENTS.length]
+          }))
+        };
+      }
     } catch (e) {
-      console.warn('[IdeaWorkflow] All AI providers failed, using deterministic fallback:', e instanceof Error ? e.message : e);
+      console.warn('Idea workflow AI error:', e);
     }
   }
 
-  // Deterministic fallback idea generator
+  // Fallback idea generator
   return {
     title: `Viral Video: ${concept.substring(0, 30)}`,
     viralHooks: [

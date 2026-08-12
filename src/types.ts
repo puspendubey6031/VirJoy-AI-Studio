@@ -837,7 +837,6 @@ export interface VideoProject {
   watermarked: boolean;
   exportQuality: string;
   shareUrl: string;
-  outputUrl?: string;
   createdAt: string;
   expiresAt: string;
 }
