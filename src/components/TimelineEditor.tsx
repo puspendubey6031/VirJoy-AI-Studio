@@ -17,7 +17,10 @@ export const TimelineEditor: React.FC<TimelineEditorProps> = ({
 }) => {
   if (!isOpen || !project) return null;
 
-  const scenes = project.scenes || [];
+  const rawScenes = project.scenes as any;
+  const scenes: Scene[] = Array.isArray(rawScenes)
+    ? rawScenes
+    : (rawScenes && Array.isArray(rawScenes.scenes) ? rawScenes.scenes : []);
 
   const handleSceneChange = (index: number, field: keyof Scene, value: any) => {
     const updated = [...scenes];

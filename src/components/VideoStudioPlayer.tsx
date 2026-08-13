@@ -64,12 +64,17 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
   const imageCacheRef = useRef<Record<string, HTMLImageElement>>({});
   const [, setRenderTrigger] = useState(0);
 
-  const totalDuration = project.scenes.reduce((acc, s) => acc + (s.duration || 4), 0);
-  const currentScene = project.scenes[currentSceneIndex] || project.scenes[0];
+  const rawScenes = (project.scenes as any);
+  const scenes: any[] = Array.isArray(rawScenes)
+    ? rawScenes
+    : (rawScenes && Array.isArray(rawScenes.scenes) ? rawScenes.scenes : []);
+
+  const totalDuration = scenes.reduce((acc, s) => acc + (s.duration || 4), 0);
+  const currentScene = scenes[currentSceneIndex] || scenes[0];
 
   // Preload and cache images
   useEffect(() => {
-    project.scenes.forEach(scene => {
+    scenes.forEach(scene => {
       if (scene.imageUrl && !imageCacheRef.current[scene.imageUrl]) {
         const img = new Image();
         if (!scene.imageUrl.startsWith('data:')) {
@@ -91,7 +96,7 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
         };
       }
     });
-  }, [project.scenes]);
+  }, [scenes]);
 
   // Handle Background Music Playback
   useEffect(() => {
@@ -116,8 +121,19 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
   }, [isPlaying, isMuted, currentScene, project]);
 
   // Speech narration synth
-  const speakNarration = (text: string) => {
-    if (isMuted || !('speechSynthesis' in window)) return;
+  const speakNarration = (text: string, voiceAudioUrl?: string) => {
+    if (isMuted) return;
+    if (voiceAudioUrl) {
+      try {
+        const audio = new Audio(voiceAudioUrl);
+        audio.volume = 1.0;
+        audio.play().catch(() => {});
+        return;
+      } catch (e) {
+        console.warn('Voice audio play fallback to SpeechSynthesis:', e);
+      }
+    }
+    if (!('speechSynthesis' in window)) return;
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.rate = 1.0;
@@ -140,12 +156,12 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
 
           // Calculate current scene index based on time
           let accumulated = 0;
-          for (let i = 0; i < project.scenes.length; i++) {
-            accumulated += project.scenes[i].duration;
+          for (let i = 0; i < scenes.length; i++) {
+            accumulated += scenes[i].duration;
             if (next <= accumulated) {
               if (i !== currentSceneIndex) {
                 setCurrentSceneIndex(i);
-                speakNarration(project.scenes[i].narration);
+                speakNarration(scenes[i].narration, scenes[i].voiceAudioUrl);
               }
               break;
             }
@@ -334,7 +350,7 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
   // Handle Play/Pause
   const togglePlay = () => {
     if (!isPlaying) {
-      speakNarration(currentScene.narration);
+      speakNarration(currentScene.narration, currentScene.voiceAudioUrl);
     }
     setIsPlaying(!isPlaying);
   };
@@ -443,7 +459,7 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
             )}
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            {project.scenes.length} Scenes • {totalDuration}s Total Duration • Ratio: {project.aspectRatio}
+            {scenes.length} Scenes • {totalDuration}s Total Duration • Ratio: {project.aspectRatio}
           </p>
         </div>
 
@@ -569,13 +585,13 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
 
             {/* Scene Indicators */}
             <div className="flex items-center gap-1.5 overflow-x-auto max-w-[200px] sm:max-w-none">
-              {project.scenes.map((s, idx) => (
+              {scenes.map((s, idx) => (
                 <button
-                  key={s.id}
+                  key={s.id || `scene-${idx}`}
                   onClick={() => {
                     setCurrentSceneIndex(idx);
                     let acc = 0;
-                    for (let i = 0; i < idx; i++) acc += project.scenes[i].duration;
+                    for (let i = 0; i < idx; i++) acc += (scenes[i].duration || 4);
                     setCurrentTime(acc);
                   }}
                   className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 ${

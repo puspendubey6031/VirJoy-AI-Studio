@@ -320,20 +320,25 @@ async function executeJobPipeline(jobId: string) {
       if (!updateJobState('rendering', 60, 6, 'Rendering high-definition scene frames & stitching timeline...')) return;
 
       const currentPlanConfig = config.plans[planKey] || config.plans.Free;
-      const totalDurationSeconds = scenes.length > 0
-        ? scenes.reduce((acc: number, s: any) => acc + (s.duration || 4), 0)
+      const inputScenes = Array.isArray(scenes) ? scenes : (scenes?.scenes && Array.isArray(scenes.scenes) ? scenes.scenes : []);
+      const totalDurationSeconds = inputScenes.length > 0
+        ? inputScenes.reduce((acc: number, s: any) => acc + (s.duration || 4), 0)
         : (job.params.targetDurationSeconds || 15);
 
-      let finalScenes = scenes;
+      let finalScenes: any[] = inputScenes;
       if (finalScenes.length === 0) {
         const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-        finalScenes = await planVideoWithAI({
+        const planResult = await planVideoWithAI({
           prompt,
           targetDurationSeconds: totalDurationSeconds,
           aspectRatio,
           inputs,
           planKey: planKey as PlanKey
         }, apiKey);
+
+        finalScenes = Array.isArray(planResult)
+          ? planResult
+          : (Array.isArray(planResult?.scenes) ? planResult.scenes : []);
       }
 
       await delay(500);
@@ -354,7 +359,7 @@ async function executeJobPipeline(jobId: string) {
         language: inputs.language || 'en-US',
         voice: inputs.voice || 'female-ananya',
         voiceTone: inputs.voiceTone || 'Energetic',
-        scenes: finalScenes,
+        scenes: Array.isArray(finalScenes) ? finalScenes : [],
         status: 'completed' as const,
         planUsed: planKey,
         watermarked: currentPlanConfig.hasWatermark,
