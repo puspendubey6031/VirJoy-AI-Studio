@@ -54,12 +54,15 @@ Visual Style: ${intelligence.visualStyle}
 Tone: ${intelligence.tone}
 Language: ${intelligence.detectedLanguage}
 
+CRITICAL INSTRUCTION FOR VISUAL PROMPTS:
+Every scene MUST receive its own distinct visualPrompt describing the specific action, movement, and environmental state happening in that scene (e.g. rain falling, character running, wings spread flying away) while maintaining main subject consistency. Never return identical or generic visual prompts.
+
 Generate JSON array of scenes:
 Each scene object:
 1. sceneNumber (1 to ${sceneCount})
 2. durationSeconds (number)
 3. narrationText
-4. visualPrompt (detailed image/video generation prompt)
+4. visualPrompt (detailed, action-specific image generation prompt representing the exact action in this scene)
 5. cameraMotion ("zoom_in", "pan_right", "drone_flyby", "static_cinematic", "pan_left", "zoom_out", "handheld_tilt")
 6. transitionEffect ("fast_wipe", "cross_dissolve", "glitch_slide", "zoom_burst", "fade_to_black")
 7. visualEffect ("cinematic_color_grade", "neon_glow", "particle_dust", "lens_flare", "vignette")`,

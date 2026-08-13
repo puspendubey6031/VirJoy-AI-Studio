@@ -373,48 +373,269 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
     }
   };
 
-  // Download Video function using MediaRecorder canvas recording
-  const handleDownloadVideo = () => {
+  // Helper to load audio buffer safely with fetch
+  const fetchAudioBuffer = async (ctx: AudioContext, url: string): Promise<AudioBuffer | null> => {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) return null;
+      const arrayBuffer = await res.arrayBuffer();
+      return await ctx.decodeAudioData(arrayBuffer);
+    } catch (e) {
+      console.warn('Audio buffer fetch note:', url, e);
+      return null;
+    }
+  };
+
+  // Helper to draw canvas frame for a specific time during export
+  const drawFrameForTime = (
+    ctx: CanvasRenderingContext2D,
+    w: number,
+    h: number,
+    t: number,
+    sceneList: any[]
+  ) => {
+    let acc = 0;
+    let activeScene = sceneList[0];
+    let sceneStartTime = 0;
+    for (let i = 0; i < sceneList.length; i++) {
+      const dur = sceneList[i].duration || 4;
+      if (t <= acc + dur) {
+        activeScene = sceneList[i];
+        sceneStartTime = acc;
+        break;
+      }
+      acc += dur;
+    }
+
+    const grad = ctx.createLinearGradient(0, 0, w, h);
+    grad.addColorStop(0, '#0f172a');
+    grad.addColorStop(0.5, '#1e1b4b');
+    grad.addColorStop(1, '#090d16');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+
+    const cachedImg = activeScene?.imageUrl ? imageCacheRef.current[activeScene.imageUrl] : null;
+
+    if (cachedImg && cachedImg.complete && cachedImg.naturalWidth > 0) {
+      ctx.save();
+      const motion = activeScene.cameraMotion || 'zoom_in';
+      const sceneDur = activeScene.duration || 4;
+      const progress = Math.min(1, Math.max(0, (t - sceneStartTime) / sceneDur));
+
+      let scale = 1.0;
+      let offsetX = 0;
+      let offsetY = 0;
+
+      if (motion === 'zoom_in') scale = 1.0 + progress * 0.12;
+      else if (motion === 'zoom_out') scale = 1.15 - progress * 0.12;
+      else if (motion === 'pan_right') { scale = 1.08; offsetX = -progress * 25; }
+      else if (motion === 'pan_left') { scale = 1.08; offsetX = progress * 25; }
+      else if (motion === 'drone_flyby') { scale = 1.0 + progress * 0.15; offsetY = -progress * 15; }
+      else scale = 1.04;
+
+      ctx.translate(w / 2 + offsetX, h / 2 + offsetY);
+      ctx.scale(scale, scale);
+      ctx.drawImage(cachedImg, -w / 2, -h / 2, w, h);
+      ctx.restore();
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.65)';
+      ctx.fillRect(15, 15, 120, 24);
+      ctx.fillStyle = '#a5b4fc';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`🎥 ${motion.toUpperCase()}`, 75, 31);
+    } else {
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+      ctx.fillRect(w * 0.1, h * 0.3, w * 0.8, h * 0.4);
+      ctx.fillStyle = '#e2e8f0';
+      ctx.font = 'bold 14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(activeScene?.title || 'VirJoy AI Scene', w / 2, h / 2 - 10);
+      ctx.font = '12px sans-serif';
+      ctx.fillText(activeScene?.visualPrompt?.substring(0, 45) || '', w / 2, h / 2 + 15);
+    }
+
+    if (activeScene?.caption && project.inputs?.subtitleEnabled !== false) {
+      const subColor = project.inputs?.subtitleColor || '#FACC15';
+      const subFont = project.inputs?.subtitleFont || 'sans-serif';
+      const subPos = project.inputs?.subtitlePosition || 'Bottom';
+      const subSize = project.inputs?.subtitleSize || 'Medium';
+
+      let fontPx = 15;
+      if (subSize === 'Small') fontPx = 12;
+      else if (subSize === 'Large') fontPx = 18;
+      else if (subSize === 'Extra Large') fontPx = 22;
+
+      let boxY = h - 70;
+      let textY = h - 42;
+      if (subPos === 'Top') { boxY = 20; textY = 48; }
+      else if (subPos === 'Center') { boxY = h / 2 - 22; textY = h / 2 + 5; }
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.fillRect(20, boxY, w - 40, 48);
+      ctx.strokeStyle = subColor;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(20, boxY, w - 40, 48);
+
+      ctx.fillStyle = subColor;
+      ctx.font = `bold ${fontPx}px ${subFont}, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(activeScene.caption, w / 2, textY);
+    }
+
+    if (project.watermarked) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText('⚡ Created with VirJoy AI (Free)', w - 15, 25);
+    }
+  };
+
+  // Download Video function using MediaRecorder + Web Audio API stream mixing
+  const handleDownloadVideo = async () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     setIsDownloading(true);
 
     try {
-      const stream = canvas.captureStream(30);
-      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+      // 1. Preload all scene images before starting recording
+      const imagePromises = scenes.map(scene => {
+        return new Promise<void>((resolve) => {
+          if (!scene.imageUrl) return resolve();
+          if (imageCacheRef.current[scene.imageUrl]?.complete) return resolve();
+          const img = new Image();
+          if (!scene.imageUrl.startsWith('data:')) {
+            img.crossOrigin = 'anonymous';
+          }
+          img.src = scene.imageUrl;
+          img.onload = () => {
+            imageCacheRef.current[scene.imageUrl] = img;
+            resolve();
+          };
+          img.onerror = () => {
+            const retryImg = new Image();
+            retryImg.src = scene.imageUrl;
+            retryImg.onload = () => {
+              imageCacheRef.current[scene.imageUrl] = retryImg;
+              resolve();
+            };
+            retryImg.onerror = () => resolve();
+          };
+        });
+      });
+
+      await Promise.all(imagePromises);
+
+      // 2. Setup Web Audio API Context and MediaStreamDestination
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const audioCtx = new AudioCtx();
+      const destNode = audioCtx.createMediaStreamDestination();
+
+      // BGM audio setup
+      const musicUrl = scenes[0]?.backgroundMusicUrl || project.inputs?.backgroundMusicUrl || '/audio/cinematic.mp3';
+      const bgmBuffer = await fetchAudioBuffer(audioCtx, musicUrl);
+      if (bgmBuffer) {
+        const bgSource = audioCtx.createBufferSource();
+        bgSource.buffer = bgmBuffer;
+        bgSource.loop = true;
+        const bgGain = audioCtx.createGain();
+        bgGain.gain.value = 0.25;
+        bgSource.connect(bgGain);
+        bgGain.connect(destNode);
+        bgSource.start(0);
+      }
+
+      // Voice TTS per scene setup
+      let sceneAccTime = 0;
+      for (let i = 0; i < scenes.length; i++) {
+        const s = scenes[i];
+        const dur = s.duration || 4;
+        const voiceUrl = s.voiceAudioUrl || `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(s.narration || 'VirJoy AI')}&tl=en&client=tw-ob`;
+
+        const voiceBuffer = await fetchAudioBuffer(audioCtx, voiceUrl);
+        if (voiceBuffer) {
+          const vSource = audioCtx.createBufferSource();
+          vSource.buffer = voiceBuffer;
+          const vGain = audioCtx.createGain();
+          vGain.gain.value = 1.0;
+          vSource.connect(vGain);
+          vGain.connect(destNode);
+          vSource.start(audioCtx.currentTime + sceneAccTime);
+        }
+        sceneAccTime += dur;
+      }
+
+      // 3. Combine canvas video track and audio destination tracks
+      const canvasStream = canvas.captureStream(30);
+      const audioTracks = destNode.stream.getAudioTracks();
+
+      const combinedTracks = [...canvasStream.getVideoTracks(), ...audioTracks];
+      const combinedStream = new MediaStream(combinedTracks);
+
+      let mimeType = 'video/webm;codecs=vp9';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : 'video/mp4';
+      }
+
+      const mediaRecorder = new MediaRecorder(combinedStream, { mimeType });
       const chunks: Blob[] = [];
 
       mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
+        if (e.data && e.data.size > 0) chunks.push(e.data);
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
+        audioCtx.close().catch(() => {});
+
+        const blob = new Blob(chunks, { type: mimeType });
+        if (blob.size === 0) {
+          console.error('Downloaded blob is empty');
+          setIsDownloading(false);
+          return;
+        }
+
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${project.title.replace(/\s+/g, '_')}_${project.exportQuality}.webm`;
+        const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+        a.download = `${project.title.replace(/\s+/g, '_')}_${project.exportQuality || 'HD'}.${ext}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         setIsDownloading(false);
       };
 
-      mediaRecorder.start();
+      mediaRecorder.start(100);
 
-      setTimeout(() => {
-        mediaRecorder.stop();
-      }, 3000);
+      // 4. Animate canvas frame-by-frame during recording
+      const width = project.aspectRatio === '9:16' ? 360 : project.aspectRatio === '1:1' ? 480 : 640;
+      const height = project.aspectRatio === '9:16' ? 640 : project.aspectRatio === '1:1' ? 480 : 360;
+      const ctx = canvas.getContext('2d');
+
+      let recTime = 0;
+      const frameRate = 30;
+      const dt = 1 / frameRate;
+
+      const recordInterval = setInterval(() => {
+        if (recTime >= totalDuration) {
+          clearInterval(recordInterval);
+          setTimeout(() => {
+            if (mediaRecorder.state !== 'inactive') {
+              mediaRecorder.stop();
+            }
+          }, 200);
+          return;
+        }
+
+        if (ctx) {
+          drawFrameForTime(ctx, width, height, recTime, scenes);
+        }
+        recTime += dt;
+      }, 1000 / frameRate);
+
     } catch (e) {
-      console.warn('Canvas recorder fallback:', e);
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(project, null, 2));
-      const downloadAnchor = document.createElement('a');
-      downloadAnchor.setAttribute("href", dataStr);
-      downloadAnchor.setAttribute("download", `${project.title.replace(/\s+/g, '_')}.json`);
-      document.body.appendChild(downloadAnchor);
-      downloadAnchor.click();
-      downloadAnchor.remove();
+      console.error('MediaRecorder download error:', e);
       setIsDownloading(false);
     }
   };

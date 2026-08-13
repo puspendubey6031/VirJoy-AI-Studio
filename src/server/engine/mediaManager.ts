@@ -17,7 +17,7 @@ class MediaManager {
     userUploads?: string[]
   ): Promise<{ mediaAssets: MediaAssetSpec[]; updatedScenes: GranularSceneSpec[] }> {
     const tasks = scenes.map(async (scene, i) => {
-      const cacheKey = this.generateCacheKey(scene.visualPrompt);
+      const cacheKey = this.generateCacheKey(scene.visualPrompt, i);
 
       // Check Cache System first
       if (this.cache.has(cacheKey)) {
@@ -106,14 +106,25 @@ class MediaManager {
     return { mediaAssets: collectedAssets, updatedScenes };
   }
 
-  private generateCacheKey(visualPrompt: string): string {
+  private generateCacheKey(visualPrompt: string, index?: number): string {
     const cleaned = visualPrompt.toLowerCase().replace(/[^a-z0-9]/g, '');
-    return `cache_key_${cleaned.substring(0, 40)}`;
+    let hash = 0;
+    for (let i = 0; i < cleaned.length; i++) {
+      hash = ((hash << 5) - hash) + cleaned.charCodeAt(i);
+      hash |= 0;
+    }
+    return `cache_key_s${index ?? 0}_${Math.abs(hash)}_${cleaned.substring(0, 20)}`;
   }
 
   private resolveStockMediaUrl(prompt: string, index: number): string {
     const pLower = prompt.toLowerCase();
-    if (pLower.includes('watch') || pLower.includes('tech') || pLower.includes('cyber')) {
+    if (pLower.includes('rain') || pLower.includes('storm') || pLower.includes('wet') || pLower.includes('drop')) {
+      return `https://images.unsplash.com/photo-1519692933481-e162a57d6721?w=1200&auto=format&fit=crop&q=80`;
+    } else if (pLower.includes('fly') || pLower.includes('flying') || pLower.includes('wing') || pLower.includes('sky')) {
+      return `https://images.unsplash.com/photo-1444464666168-49d633b86797?w=1200&auto=format&fit=crop&q=80`;
+    } else if (pLower.includes('bird') || pLower.includes('pond') || pLower.includes('lake') || pLower.includes('nature')) {
+      return `https://images.unsplash.com/photo-1452570053594-1b985d6ea890?w=1200&auto=format&fit=crop&q=80`;
+    } else if (pLower.includes('watch') || pLower.includes('tech') || pLower.includes('cyber')) {
       return `https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=1200&auto=format&fit=crop&q=80`;
     } else if (pLower.includes('perfume') || pLower.includes('splash') || pLower.includes('gold')) {
       return `https://images.unsplash.com/photo-1541643600914-78b084683601?w=1200&auto=format&fit=crop&q=80`;

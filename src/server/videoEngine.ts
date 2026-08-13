@@ -58,8 +58,8 @@ export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string
       visualEffect: s.visualEffect,
       subtitleStartTime: s.subtitleStartTime,
       subtitleEndTime: s.subtitleEndTime,
-      voiceAudioUrl: checkpoint.voiceSpec?.audioBufferUrl,
-      backgroundMusicUrl: checkpoint.timelinePackage?.backgroundMusicUrl
+      voiceAudioUrl: `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(s.narrationText || prompt)}&tl=${(inputs.language || 'en').startsWith('hi') ? 'hi' : (inputs.language || 'en').startsWith('ta') ? 'ta' : 'en'}&client=tw-ob`,
+      backgroundMusicUrl: checkpoint.timelinePackage?.backgroundMusicUrl || '/audio/cinematic.mp3'
     }));
 
     return {
