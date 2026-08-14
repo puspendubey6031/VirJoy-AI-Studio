@@ -373,17 +373,69 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
     }
   };
 
-  // Helper to load audio buffer safely with fetch
+  // Helper to load audio buffer safely with fetch via proxy
   const fetchAudioBuffer = async (ctx: AudioContext, url: string): Promise<AudioBuffer | null> => {
     try {
-      const res = await fetch(url);
-      if (!res.ok) return null;
+      const fetchUrl = (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('/audio/'))
+        ? url
+        : `/api/proxy-audio?url=${encodeURIComponent(url)}`;
+      console.log('[AudioPreload] Fetching audio from:', fetchUrl);
+      const res = await fetch(fetchUrl);
+      if (!res.ok) {
+        console.warn('[AudioPreload] Response not ok:', res.status, fetchUrl);
+        return null;
+      }
       const arrayBuffer = await res.arrayBuffer();
-      return await ctx.decodeAudioData(arrayBuffer);
+      if (!arrayBuffer || arrayBuffer.byteLength === 0) {
+        console.warn('[AudioPreload] ArrayBuffer empty:', fetchUrl);
+        return null;
+      }
+      const decoded = await ctx.decodeAudioData(arrayBuffer);
+      console.log('[AudioPreload] Successfully decoded audio:', fetchUrl, 'duration:', decoded.duration);
+      return decoded;
     } catch (e) {
-      console.warn('Audio buffer fetch note:', url, e);
+      console.warn('[AudioPreload] Error loading audio buffer:', url, e);
       return null;
     }
+  };
+
+  // Helper to preload clean same-origin blob image to guarantee canvas is never tainted
+  const preloadCleanImage = (url: string): Promise<HTMLImageElement | null> => {
+    return new Promise((resolve) => {
+      if (!url) return resolve(null);
+      if (url.startsWith('data:')) {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = url;
+        return;
+      }
+
+      const proxyUrl = `/api/proxy-image?url=${encodeURIComponent(url)}`;
+      fetch(proxyUrl)
+        .then(res => {
+          if (!res.ok) throw new Error(`Status ${res.status}`);
+          return res.blob();
+        })
+        .then(blob => {
+          const objectUrl = URL.createObjectURL(blob);
+          const img = new Image();
+          img.onload = () => resolve(img);
+          img.onerror = () => {
+            URL.revokeObjectURL(objectUrl);
+            resolve(null);
+          };
+          img.src = objectUrl;
+        })
+        .catch((err) => {
+          console.warn('[CleanImagePreload] Proxy failed, falling back to direct load:', url, err);
+          const fallbackImg = new Image();
+          fallbackImg.crossOrigin = 'anonymous';
+          fallbackImg.onload = () => resolve(fallbackImg);
+          fallbackImg.onerror = () => resolve(null);
+          fallbackImg.src = url;
+        });
+    });
   };
 
   // Helper to draw canvas frame for a specific time during export
@@ -399,7 +451,7 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
     let sceneStartTime = 0;
     for (let i = 0; i < sceneList.length; i++) {
       const dur = sceneList[i].duration || 4;
-      if (t <= acc + dur) {
+      if (t <= acc + dur || i === sceneList.length - 1) {
         activeScene = sceneList[i];
         sceneStartTime = acc;
         break;
@@ -494,45 +546,48 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
   // Download Video function using MediaRecorder + Web Audio API stream mixing
   const handleDownloadVideo = async () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) {
+      console.error('[Download] Canvas ref missing!');
+      return;
+    }
+
+    console.log('[Download] 1. Download button clicked');
+    console.log('[Download] 2. Scenes loaded:', scenes.length, 'scenes');
+    console.log('[Download] 3. Total duration calculated:', totalDuration, 'seconds');
 
     setIsDownloading(true);
 
     try {
-      // 1. Preload all scene images before starting recording
-      const imagePromises = scenes.map(scene => {
-        return new Promise<void>((resolve) => {
-          if (!scene.imageUrl) return resolve();
-          if (imageCacheRef.current[scene.imageUrl]?.complete) return resolve();
-          const img = new Image();
-          if (!scene.imageUrl.startsWith('data:')) {
-            img.crossOrigin = 'anonymous';
-          }
-          img.src = scene.imageUrl;
-          img.onload = () => {
-            imageCacheRef.current[scene.imageUrl] = img;
-            resolve();
-          };
-          img.onerror = () => {
-            const retryImg = new Image();
-            retryImg.src = scene.imageUrl;
-            retryImg.onload = () => {
-              imageCacheRef.current[scene.imageUrl] = retryImg;
-              resolve();
-            };
-            retryImg.onerror = () => resolve();
-          };
-        });
+      // Image Preload Phase
+      console.log('[Download] 4. Image preload started');
+      const imagePromises = scenes.map(async (scene, i) => {
+        if (!scene.imageUrl) return;
+        if (imageCacheRef.current[scene.imageUrl]?.complete) return;
+        console.log(`[Download] Preloading image for scene ${i + 1}:`, scene.imageUrl);
+        const img = await preloadCleanImage(scene.imageUrl);
+        if (img) {
+          imageCacheRef.current[scene.imageUrl] = img;
+          console.log(`[Download] Scene ${i + 1} image preloaded successfully`);
+        }
       });
 
       await Promise.all(imagePromises);
+      console.log('[Download] 5. Image preload completed');
 
-      // 2. Setup Web Audio API Context and MediaStreamDestination
+      // Audio Setup Phase
+      console.log('[Download] 6. Voice preload started');
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioCtx();
-      const destNode = audioCtx.createMediaStreamDestination();
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
+      console.log('[Download] 10. AudioContext created & resumed, state:', audioCtx.state);
 
-      // BGM audio setup
+      const destNode = audioCtx.createMediaStreamDestination();
+      console.log('[Download] 11. MediaStreamDestination created');
+
+      // BGM Setup
+      console.log('[Download] 8. BGM preload started');
       const musicUrl = scenes[0]?.backgroundMusicUrl || project.inputs?.backgroundMusicUrl || '/audio/cinematic.mp3';
       const bgmBuffer = await fetchAudioBuffer(audioCtx, musicUrl);
       if (bgmBuffer) {
@@ -544,14 +599,16 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
         bgSource.connect(bgGain);
         bgGain.connect(destNode);
         bgSource.start(0);
+        console.log('[Download] BGM source connected to destNode');
       }
+      console.log('[Download] 9. BGM preload completed');
 
-      // Voice TTS per scene setup
+      // Voice Setup
       let sceneAccTime = 0;
       for (let i = 0; i < scenes.length; i++) {
         const s = scenes[i];
         const dur = s.duration || 4;
-        const voiceUrl = s.voiceAudioUrl || `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(s.narration || 'VirJoy AI')}&tl=en&client=tw-ob`;
+        const voiceUrl = s.voiceAudioUrl || `/api/proxy-audio?url=${encodeURIComponent(`https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(s.narration || 'VirJoy AI')}&tl=en&client=tw-ob`)}`;
 
         const voiceBuffer = await fetchAudioBuffer(audioCtx, voiceUrl);
         if (voiceBuffer) {
@@ -562,53 +619,97 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
           vSource.connect(vGain);
           vGain.connect(destNode);
           vSource.start(audioCtx.currentTime + sceneAccTime);
+          console.log(`[Download] Scene ${i + 1} voice connected at +${sceneAccTime}s`);
         }
         sceneAccTime += dur;
       }
+      console.log('[Download] 7. Voice preload completed');
 
-      // 3. Combine canvas video track and audio destination tracks
+      // Canvas & Stream Combination Phase
       const canvasStream = canvas.captureStream(30);
-      const audioTracks = destNode.stream.getAudioTracks();
+      console.log('[Download] 12. canvas.captureStream created');
 
-      const combinedTracks = [...canvasStream.getVideoTracks(), ...audioTracks];
-      const combinedStream = new MediaStream(combinedTracks);
-
-      let mimeType = 'video/webm;codecs=vp9';
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = MediaRecorder.isTypeSupported('video/webm') ? 'video/webm' : 'video/mp4';
+      const videoTracks = canvasStream.getVideoTracks();
+      console.log('[Download] 13. Video track count:', videoTracks.length);
+      if (videoTracks.length === 0) {
+        throw new Error('Canvas captureStream returned zero video tracks');
       }
 
-      const mediaRecorder = new MediaRecorder(combinedStream, { mimeType });
+      const audioTracks = destNode.stream.getAudioTracks();
+      console.log('[Download] 14. Audio track count:', audioTracks.length);
+
+      const combinedTracks = [...videoTracks, ...audioTracks];
+      const combinedStream = new MediaStream(combinedTracks);
+
+      // Select MIME Type
+      let mimeType = 'video/webm;codecs=vp9';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
+          mimeType = 'video/webm;codecs=vp8';
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+          mimeType = 'video/webm';
+        } else if (MediaRecorder.isTypeSupported('video/mp4')) {
+          mimeType = 'video/mp4';
+        } else {
+          mimeType = '';
+        }
+      }
+      console.log('[Download] Selected MIME type:', mimeType);
+
+      const recorderOptions = mimeType ? { mimeType } : undefined;
+      const mediaRecorder = new MediaRecorder(combinedStream, recorderOptions);
+      console.log('[Download] 15. MediaRecorder created');
+
       const chunks: Blob[] = [];
 
       mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunks.push(e.data);
+        if (e.data && e.data.size > 0) {
+          chunks.push(e.data);
+          console.log('[Download] 20. ondataavailable fired, chunk size:', e.data.size, 'total chunks:', chunks.length);
+        }
       };
 
       mediaRecorder.onstop = () => {
+        console.log('[Download] 19. MediaRecorder onstop event fired. Chunk count:', chunks.length);
+        console.log('[Download] 21. Blob chunks count:', chunks.length);
+
         audioCtx.close().catch(() => {});
 
-        const blob = new Blob(chunks, { type: mimeType });
+        const finalMime = mimeType || 'video/webm';
+        const blob = new Blob(chunks, { type: finalMime });
+        console.log('[Download] 22. Final Blob size:', blob.size, 'bytes');
+        console.log('[Download] 23. Final MIME type:', finalMime);
+
         if (blob.size === 0) {
-          console.error('Downloaded blob is empty');
+          console.error('[Download Error] MediaRecorder blob size is 0');
           setIsDownloading(false);
           return;
         }
 
         const url = URL.createObjectURL(blob);
+        console.log('[Download] 24. Download URL created:', url);
+
         const a = document.createElement('a');
         a.href = url;
-        const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
-        a.download = `${project.title.replace(/\s+/g, '_')}_${project.exportQuality || 'HD'}.${ext}`;
+        const ext = finalMime.includes('mp4') ? 'mp4' : 'webm';
+        const fileName = `${project.title.replace(/\s+/g, '_')}_${project.exportQuality || 'HD'}.${ext}`;
+        a.download = fileName;
         document.body.appendChild(a);
         a.click();
+        console.log('[Download] 25. anchor.click() executed for:', fileName);
         document.body.removeChild(a);
-        setIsDownloading(false);
+
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+          setIsDownloading(false);
+          console.log('[Download] 26. Cleanup completed');
+        }, 1000);
       };
 
       mediaRecorder.start(100);
+      console.log('[Download] 16. MediaRecorder started');
 
-      // 4. Animate canvas frame-by-frame during recording
+      // Frame loop
       const width = project.aspectRatio === '9:16' ? 360 : project.aspectRatio === '1:1' ? 480 : 640;
       const height = project.aspectRatio === '9:16' ? 640 : project.aspectRatio === '1:1' ? 480 : 360;
       const ctx = canvas.getContext('2d');
@@ -617,14 +718,18 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
       const frameRate = 30;
       const dt = 1 / frameRate;
 
+      console.log('[Download] 17. Frame loop started');
+
       const recordInterval = setInterval(() => {
         if (recTime >= totalDuration) {
           clearInterval(recordInterval);
+          console.log('[Download] 18. Frame loop completed at t =', recTime);
           setTimeout(() => {
             if (mediaRecorder.state !== 'inactive') {
+              console.log('[Download] Stopping MediaRecorder');
               mediaRecorder.stop();
             }
-          }, 200);
+          }, 300);
           return;
         }
 
@@ -634,8 +739,8 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
         recTime += dt;
       }, 1000 / frameRate);
 
-    } catch (e) {
-      console.error('MediaRecorder download error:', e);
+    } catch (e: any) {
+      console.error('[Download Critical Failure]:', e?.message || e, e);
       setIsDownloading(false);
     }
   };

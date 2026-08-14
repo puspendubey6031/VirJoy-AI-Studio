@@ -233,38 +233,112 @@ Aspect Ratio: ${aspectRatio}`;
   }
 
   // --- 5. FALLBACK 4: BUILT-IN RULE ENGINE ---
-  const defaultScenes: ScriptScene[] = [
-    {
-      sceneNumber: 1,
-      duration: Math.max(3, Math.floor(targetDurationSeconds / numScenes)),
-      visualDescription: `Dramatic opening hook featuring product concept: "${prompt}". High contrast 4k studio lighting.`,
-      voiceoverText: `Are you ready for the ultimate experience? Introducing ${prompt.substring(0, 30)}!`,
-      textOverlay: `REVOLUTIONARY`,
-      imagePrompt: `High resolution 4k studio commercial banner for ${prompt}`,
-      stockSearchTerm: `technology product`,
-      transition: 'fade'
-    },
-    {
-      sceneNumber: 2,
-      duration: Math.max(3, Math.ceil(targetDurationSeconds / numScenes)),
-      visualDescription: `Close-up view demonstrating key benefits and features of ${prompt}. Modern dynamic motion.`,
-      voiceoverText: `Engineered with precision and premium quality to elevate your daily workflow seamlessly.`,
-      textOverlay: `PREMIUM QUALITY`,
-      imagePrompt: `Sleek minimalist product showcase of ${prompt}`,
-      stockSearchTerm: `lifestyle professional`,
-      transition: 'zoom-in'
-    },
-    {
-      sceneNumber: 3,
-      duration: Math.max(3, Math.floor(targetDurationSeconds / numScenes)),
-      visualDescription: `Call to action scene with vibrant background particles, company branding, and special discount badge.`,
-      voiceoverText: `Don't wait! Get yours today with exclusive limited-time launch offers available now.`,
-      textOverlay: `SPECIAL OFFER - BUY NOW`,
-      imagePrompt: `Modern promotional banner with call to action for ${prompt}`,
-      stockSearchTerm: `celebration offer`,
-      transition: 'slide'
-    }
-  ];
+  const promptSentences = prompt
+    .split(/(?<=[.!?])\s+|\s*\n+\s*/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  const isNarrative = promptSentences.length >= 2 || /bird|pond|rain|fly|wing|sky|storm|nature|animal|character|walk|run|lake|forest|mountain|ocean|river/i.test(prompt);
+  const perSceneDur = Math.max(3, Math.round(targetDurationSeconds / Math.max(3, numScenes)));
+  const defaultScenes: ScriptScene[] = [];
+
+  if (isNarrative && promptSentences.length >= 3) {
+    const s1 = promptSentences[0];
+    const s2 = promptSentences[1];
+    const s3 = promptSentences.slice(2).join(' ');
+
+    defaultScenes.push(
+      {
+        sceneNumber: 1,
+        duration: perSceneDur,
+        visualDescription: `Cinematic scene: ${s1}. Peaceful natural lighting.`,
+        voiceoverText: s1,
+        textOverlay: s1.substring(0, 35),
+        imagePrompt: `${s1}, high resolution 4k cinematic photo, detailed natural surroundings, clear subject and environment`,
+        stockSearchTerm: `bird pond nature`,
+        transition: 'fade'
+      },
+      {
+        sceneNumber: 2,
+        duration: perSceneDur,
+        visualDescription: `Dynamic scene: ${s2}. High detail rain and weather transition over subject.`,
+        voiceoverText: s2,
+        textOverlay: s2.substring(0, 35),
+        imagePrompt: `${s1} while ${s2}, visible rain droplets, wet water surface, heavy rainfall, 4k cinematic photo`,
+        stockSearchTerm: `rain storm pond`,
+        transition: 'cross_dissolve'
+      },
+      {
+        sceneNumber: 3,
+        duration: perSceneDur,
+        visualDescription: `Action culmination scene: ${s3}. Motion in rain.`,
+        voiceoverText: s3,
+        textOverlay: s3.substring(0, 35),
+        imagePrompt: `${s3} during heavy rain storm, spreading wings in flight from pond, dynamic motion, 4k cinematic photo`,
+        stockSearchTerm: `bird flying rain`,
+        transition: 'zoom_burst'
+      }
+    );
+  } else if (isNarrative && promptSentences.length === 2) {
+    const s1 = promptSentences[0];
+    const s2 = promptSentences[1];
+
+    defaultScenes.push(
+      {
+        sceneNumber: 1,
+        duration: perSceneDur,
+        visualDescription: `Opening scene: ${s1}.`,
+        voiceoverText: s1,
+        textOverlay: s1.substring(0, 35),
+        imagePrompt: `${s1}, 4k high definition cinematic photo`,
+        stockSearchTerm: `nature landscape`,
+        transition: 'fade'
+      },
+      {
+        sceneNumber: 2,
+        duration: perSceneDur,
+        visualDescription: `Climax scene: ${s2}.`,
+        voiceoverText: s2,
+        textOverlay: s2.substring(0, 35),
+        imagePrompt: `${s1} as ${s2}, 4k cinematic photo`,
+        stockSearchTerm: `action movement`,
+        transition: 'zoom_burst'
+      }
+    );
+  } else {
+    defaultScenes.push(
+      {
+        sceneNumber: 1,
+        duration: Math.max(3, Math.floor(targetDurationSeconds / numScenes)),
+        visualDescription: `Dramatic opening hook featuring: "${prompt}". High contrast 4k studio lighting.`,
+        voiceoverText: `Are you ready for the ultimate experience? Introducing ${prompt.substring(0, 30)}!`,
+        textOverlay: `REVOLUTIONARY`,
+        imagePrompt: `High resolution 4k studio commercial banner for ${prompt}`,
+        stockSearchTerm: `technology product`,
+        transition: 'fade'
+      },
+      {
+        sceneNumber: 2,
+        duration: Math.max(3, Math.ceil(targetDurationSeconds / numScenes)),
+        visualDescription: `Close-up view demonstrating key benefits and features of ${prompt}. Modern dynamic motion.`,
+        voiceoverText: `Engineered with precision and premium quality to elevate your daily workflow seamlessly.`,
+        textOverlay: `PREMIUM QUALITY`,
+        imagePrompt: `Sleek minimalist product showcase of ${prompt}`,
+        stockSearchTerm: `lifestyle professional`,
+        transition: 'zoom_in'
+      },
+      {
+        sceneNumber: 3,
+        duration: Math.max(3, Math.floor(targetDurationSeconds / numScenes)),
+        visualDescription: `Call to action scene with vibrant background particles, company branding, and special discount badge.`,
+        voiceoverText: `Don't wait! Get yours today with exclusive limited-time launch offers available now.`,
+        textOverlay: `SPECIAL OFFER - BUY NOW`,
+        imagePrompt: `Modern promotional banner with call to action for ${prompt}`,
+        stockSearchTerm: `celebration offer`,
+        transition: 'slide'
+      }
+    );
+  }
 
   return {
     scenes: defaultScenes,

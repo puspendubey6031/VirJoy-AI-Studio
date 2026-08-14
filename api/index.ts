@@ -541,6 +541,62 @@ app.post('/api/providers/generate-voice', async (req, res) => {
   }
 });
 
+// Audio Proxy endpoint to bypass client-side CORS for TTS and BGM audio streams
+app.get('/api/proxy-audio', async (req, res) => {
+  try {
+    const targetUrl = req.query.url as string;
+    if (!targetUrl) return res.status(400).send('URL required');
+    
+    // Direct handling if already a proxy URL
+    const fetchUrl = targetUrl.startsWith('/api/') ? `http://localhost:3000${targetUrl}` : targetUrl;
+    const response = await fetch(fetchUrl);
+    if (!response.ok) {
+      console.warn('[ProxyAudio] Failed to fetch target audio URL:', fetchUrl, response.status);
+      return res.status(response.status).send('Failed to fetch target audio');
+    }
+    const contentType = response.headers.get('content-type') || 'audio/mpeg';
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Content-Type', contentType);
+    const arrayBuffer = await response.arrayBuffer();
+    return res.send(Buffer.from(arrayBuffer));
+  } catch (err: any) {
+    console.error('[ProxyAudio Error]:', err?.message || err);
+    return res.status(500).send('Proxy audio error');
+  }
+});
+
+// Image Proxy endpoint to convert external images to clean CORS / base64 images, preventing canvas tainting
+app.get('/api/proxy-image', async (req, res) => {
+  try {
+    const targetUrl = req.query.url as string;
+    if (!targetUrl) return res.status(400).send('URL required');
+    
+    if (targetUrl.startsWith('data:')) {
+      const parts = targetUrl.split(',');
+      const mime = parts[0].match(/:(.*?);/)?.[1] || 'image/jpeg';
+      const imgBuffer = Buffer.from(parts[1], 'base64');
+      res.set('Access-Control-Allow-Origin', '*');
+      res.set('Content-Type', mime);
+      return res.send(imgBuffer);
+    }
+
+    const fetchUrl = targetUrl.startsWith('/api/') ? `http://localhost:3000${targetUrl}` : targetUrl;
+    const response = await fetch(fetchUrl);
+    if (!response.ok) {
+      console.warn('[ProxyImage] Failed to fetch target image URL:', fetchUrl, response.status);
+      return res.status(response.status).send('Failed to fetch target image');
+    }
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    res.set('Access-Control-Allow-Origin', '*');
+    res.set('Content-Type', contentType);
+    const arrayBuffer = await response.arrayBuffer();
+    return res.send(Buffer.from(arrayBuffer));
+  } catch (err: any) {
+    console.error('[ProxyImage Error]:', err?.message || err);
+    return res.status(500).send('Proxy image error');
+  }
+});
+
 // AI Video Clip Generation API with Fallback
 app.post('/api/providers/generate-video', async (req, res) => {
   try {
