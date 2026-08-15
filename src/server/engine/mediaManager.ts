@@ -11,17 +11,29 @@ class MediaManager {
   private cache: Map<string, MediaManagerCacheItem> = new Map();
   private maxCacheSize = 200;
 
-  // Primary Priority: User Upload (1) > AI Generated (2) > Stock Fallback (3)
+  // Primary Priority: User Upload (1) > AI Generated (2)
   public async collectMediaAssetsForScenes(
     scenes: GranularSceneSpec[],
     userUploads?: string[]
   ): Promise<{ mediaAssets: MediaAssetSpec[]; updatedScenes: GranularSceneSpec[] }> {
     const tasks = scenes.map(async (scene, i) => {
-      const cacheKey = this.generateCacheKey(scene.visualPrompt, i);
+      const visualPrompt = scene.visualPrompt?.trim();
+      if (!visualPrompt) {
+        throw new Error(`MISSING_VISUAL_PROMPT scene=${i + 1}`);
+      }
+
+      const cacheKey = this.generateCacheKey(visualPrompt, i);
 
       // Check Cache System first
       if (this.cache.has(cacheKey)) {
         const cachedItem = this.cache.get(cacheKey)!;
+        console.log(`[MediaManager] Scene ${i + 1}
+visualPrompt=${visualPrompt}
+cacheKey=${cacheKey}
+provider=Cached (${cachedItem.asset.source})
+imageUrl=${cachedItem.asset.url}
+validation=PASS`);
+
         return {
           asset: cachedItem.asset,
           updatedScene: {
@@ -35,54 +47,68 @@ class MediaManager {
       let chosenAsset: MediaAssetSpec | null = null;
 
       // Priority 1: User Uploads if provided
-      if (userUploads && userUploads.length > i) {
-        chosenAsset = {
-          id: `asset_user_${i}_${Date.now()}`,
-          source: 'user_upload',
-          assetType: 'image',
-          url: userUploads[i],
-          cacheKey,
-          priority: 1
-        };
+      if (userUploads && userUploads.length > i && userUploads[i]) {
+        const userUploadUrl = userUploads[i];
+        const isValidUserUpload = await this.validateImageResource(userUploadUrl);
+        if (isValidUserUpload) {
+          chosenAsset = {
+            id: `asset_user_${i}_${Date.now()}`,
+            source: 'user_upload',
+            assetType: 'image',
+            url: userUploadUrl,
+            thumbnailUrl: userUploadUrl,
+            cacheKey,
+            priority: 1
+          };
+          console.log(`[MediaManager] Scene ${i + 1}
+visualPrompt=${visualPrompt}
+cacheKey=${cacheKey}
+provider=UserUpload
+imageUrl=${chosenAsset.url}
+validation=PASS`);
+        }
       }
 
       // Priority 2: Real AI Image Generation
       if (!chosenAsset) {
+        let aiImageResult: any = null;
+        let isValid = false;
+
         try {
-          const aiImageResult = await generateImageWithFallback({
-            prompt: scene.visualPrompt || scene.narrationText,
+          aiImageResult = await generateImageWithFallback({
+            prompt: visualPrompt,
             aspectRatio: '16:9'
           });
 
-          if (aiImageResult && aiImageResult.imageUrl) {
-            chosenAsset = {
-              id: `asset_ai_${i}_${Date.now()}`,
-              source: 'ai_generated',
-              assetType: 'image',
-              url: aiImageResult.imageUrl,
-              thumbnailUrl: aiImageResult.imageUrl,
-              cacheKey,
-              priority: 2,
-              attribution: `AI Generated via ${aiImageResult.providerUsed} (${aiImageResult.modelUsed})`
-            };
+          if (aiImageResult && aiImageResult.imageUrl && aiImageResult.imageUrl.trim().length > 0) {
+            isValid = await this.validateImageResource(aiImageResult.imageUrl);
           }
-        } catch (e) {
-          console.warn(`[MediaManager] AI image generation for scene ${i + 1} failed, using stock fallback:`, e);
+        } catch (err: any) {
+          console.warn(`[MediaManager] AI image generation exception for scene ${i + 1}:`, err?.message || err);
         }
-      }
 
-      // Priority 3: Stock Media Collection Fallback
-      if (!chosenAsset) {
-        const stockUrl = this.resolveStockMediaUrl(scene.visualPrompt, i);
+        console.log(`[MediaManager] Scene ${i + 1}
+visualPrompt=${visualPrompt}
+cacheKey=${cacheKey}
+provider=${aiImageResult?.providerUsed || 'None'}
+imageUrl=${aiImageResult?.imageUrl || 'None'}
+validation=${isValid ? 'PASS' : 'FAIL'}`);
+
+        if (!isValid || !aiImageResult || !aiImageResult.imageUrl) {
+          throw new Error(
+            `IMAGE_GENERATION_FAILED scene=${i + 1} prompt="${visualPrompt}"`
+          );
+        }
+
         chosenAsset = {
-          id: `asset_stock_${i}_${Date.now()}`,
-          source: i % 2 === 0 ? 'pexels' : 'pixabay',
+          id: `asset_ai_${i}_${Date.now()}`,
+          source: 'ai_generated',
           assetType: 'image',
-          url: stockUrl,
-          thumbnailUrl: stockUrl,
+          url: aiImageResult.imageUrl,
+          thumbnailUrl: aiImageResult.imageUrl,
           cacheKey,
-          priority: 3,
-          attribution: 'Stock Media provided via VirJoy AI Media Engine'
+          priority: 2,
+          attribution: `AI Generated via ${aiImageResult.providerUsed} (${aiImageResult.modelUsed})`
         };
       }
 
@@ -107,16 +133,68 @@ class MediaManager {
   }
 
   private generateCacheKey(visualPrompt: string, index?: number): string {
-    const cleaned = visualPrompt.toLowerCase().replace(/[^a-z0-9]/g, '');
-    let hash = 0;
-    for (let i = 0; i < cleaned.length; i++) {
-      hash = ((hash << 5) - hash) + cleaned.charCodeAt(i);
-      hash |= 0;
+    const normalized = (visualPrompt || '')
+      .trim()
+      .toLowerCase();
+
+    let hash = 2166136261;
+
+    for (let i = 0; i < normalized.length; i++) {
+      hash ^= normalized.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
     }
-    return `cache_key_s${index ?? 0}_${Math.abs(hash)}_${cleaned.substring(0, 20)}`;
+
+    return `scene_${index ?? 0}_${(hash >>> 0).toString(16)}`;
   }
 
-  private resolveStockMediaUrl(prompt: string, index: number): string {
+  private async validateImageResource(url: string): Promise<boolean> {
+    if (!url || typeof url !== 'string') return false;
+
+    // Base64 data URL validation
+    if (url.startsWith('data:')) {
+      const match = url.match(/^data:image\/[a-zA-Z0-9+.-]+;base64,(.+)$/);
+      if (!match || !match[1] || match[1].trim().length === 0) {
+        return false;
+      }
+      return true;
+    }
+
+    // HTTP / HTTPS URL validation
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: { 'Accept': 'image/*' },
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) return false;
+        const contentType = res.headers.get('content-type') || '';
+        const isImage =
+          contentType.startsWith('image/') ||
+          contentType.includes('octet-stream') ||
+          url.includes('pollinations.ai') ||
+          url.includes('unsplash.com');
+
+        const contentLength = res.headers.get('content-length');
+        if (contentLength && parseInt(contentLength, 10) === 0) {
+          return false;
+        }
+        return isImage;
+      } catch (e) {
+        console.warn('[MediaManager] Validation check error for URL:', url, e);
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  // Preserved for legacy product workflows if needed
+  public resolveStockMediaUrl(prompt: string, index: number): string {
     const pLower = prompt.toLowerCase();
     if (pLower.includes('rain') || pLower.includes('storm') || pLower.includes('wet') || pLower.includes('drop')) {
       return `https://images.unsplash.com/photo-1519692933481-e162a57d6721?w=1200&auto=format&fit=crop&q=80`;
@@ -135,7 +213,6 @@ class MediaManager {
     } else if (pLower.includes('car') || pLower.includes('speed') || pLower.includes('highway')) {
       return `https://images.unsplash.com/photo-1503376780353-7e6692767b70?w=1200&auto=format&fit=crop&q=80`;
     }
-    // General fallback cinematic images
     const fallbacks = [
       'https://images.unsplash.com/photo-1579546929518-9e396f3cc809?w=1200&auto=format&fit=crop&q=80',
       'https://images.unsplash.com/photo-1518770660439-4636190af475?w=1200&auto=format&fit=crop&q=80',

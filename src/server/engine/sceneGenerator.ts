@@ -48,24 +48,59 @@ export async function generateGranularScenes(
 
       const response = await ai.models.generateContent({
         model: 'gemini-2.0-flash',
-        contents: `Break down this script into ${sceneCount} high-impact video scenes for VirJoy AI.
-Script: "${scriptText}"
+        contents: `Break down the supplied narrative into chronological cinematic scenes.
+
+The original user story is:
+"${prompt}"
+
+The generated script is:
+"${scriptText}"
+
 Visual Style: ${intelligence.visualStyle}
 Tone: ${intelligence.tone}
 Language: ${intelligence.detectedLanguage}
 
-CRITICAL INSTRUCTION FOR VISUAL PROMPTS:
-Every scene MUST receive its own distinct visualPrompt describing the specific action, movement, and environmental state happening in that scene (e.g. rain falling, character running, wings spread flying away) while maintaining main subject consistency. Never return identical or generic visual prompts.
+For EVERY scene:
+- Identify the exact subject.
+- Identify the exact location/environment.
+- Identify the exact action occurring at that moment.
+- Describe the visible state of the environment.
+- Describe motion/action explicitly.
+- Preserve character/object identity and visual continuity from previous scenes.
+- Do NOT summarize multiple actions into one generic image.
+- Do NOT output generic subject-only prompts.
 
-Generate JSON array of scenes:
-Each scene object:
-1. sceneNumber (1 to ${sceneCount})
-2. durationSeconds (number)
-3. narrationText
-4. visualPrompt (detailed, action-specific image generation prompt representing the exact action in this scene)
-5. cameraMotion ("zoom_in", "pan_right", "drone_flyby", "static_cinematic", "pan_left", "zoom_out", "handheld_tilt")
-6. transitionEffect ("fast_wipe", "cross_dissolve", "glitch_slide", "zoom_burst", "fade_to_black")
-7. visualEffect ("cinematic_color_grade", "neon_glow", "particle_dust", "lens_flare", "vignette")`,
+Examples:
+If the story says:
+"A bird sits beside a pond."
+
+visualPrompt MUST describe:
+"A small bird sitting beside a clearly visible pond..."
+
+If the story says:
+"Heavy rain starts falling."
+
+visualPrompt MUST describe:
+"The SAME small bird beside the SAME pond while heavy rain is visibly falling, many visible raindrops, wet surroundings, rain ripples on the pond..."
+
+If the story says:
+"The bird spreads its wings and flies away."
+
+visualPrompt MUST describe:
+"The SAME bird spreading its wings and flying away from the pond, wings visibly extended, bird airborne, rain still falling..."
+
+The visualPrompt must describe what must actually be visible in the generated image.
+
+Never return:
+"bird"
+"bird near water"
+"nature"
+"cinematic landscape"
+"beautiful scenery"
+
+when the scene requires a specific action.
+
+Return valid JSON only.`,
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
@@ -110,7 +145,7 @@ Each scene object:
             sceneNumber: idx + 1,
             durationSeconds: dur,
             narrationText: s.narrationText || prompt,
-            visualPrompt: s.visualPrompt || `Cinematic shot for ${prompt}`,
+            visualPrompt: s.visualPrompt || `${prompt}. Show the exact subject, location, environment, and action described in this scene.`,
             cameraMotion: validateList(s.cameraMotion, CAMERA_MOTIONS, CAMERA_MOTIONS[idx % CAMERA_MOTIONS.length]),
             transitionEffect: validateList(s.transitionEffect, TRANSITIONS, TRANSITIONS[idx % TRANSITIONS.length]),
             visualEffect: validateList(s.visualEffect, EFFECTS, EFFECTS[idx % EFFECTS.length]),
@@ -145,7 +180,7 @@ Each scene object:
       sceneNumber: idx + 1,
       durationSeconds: dur,
       narrationText: textSnippet,
-      visualPrompt: `${intelligence.visualStyle} shot representing "${textSnippet}". High definition 8k cinematic lighting.`,
+      visualPrompt: `${textSnippet}. Show the exact subject, location, environment, and ACTION described in this scene. If the text describes rain, visibly show falling raindrops and wet surfaces. If it describes flying, visibly show the subject airborne with wings/body in the correct flying position. If it describes running, visibly show the subject running. Preserve the same main subject and environment across scenes. Cinematic realistic composition, clear action, detailed environment.`,
       cameraMotion: CAMERA_MOTIONS[idx % CAMERA_MOTIONS.length],
       transitionEffect: TRANSITIONS[idx % TRANSITIONS.length],
       visualEffect: EFFECTS[idx % EFFECTS.length],

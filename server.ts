@@ -405,6 +405,93 @@ async function startServer() {
     }
   });
 
+  // Audio Proxy Helper (for safe cross-origin audio fetching, header preservation & CORS bypass)
+  app.get('/api/proxy-audio', async (req, res) => {
+    try {
+      const targetUrl = req.query.url as string;
+      if (!targetUrl) {
+        return res.status(400).json({ error: 'url query parameter is required' });
+      }
+
+      if (targetUrl.startsWith('data:')) {
+        const match = targetUrl.match(/^data:(audio\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+        if (match && match[1] && match[2]) {
+          const buffer = Buffer.from(match[2], 'base64');
+          res.setHeader('Content-Type', match[1]);
+          res.setHeader('Content-Length', buffer.length);
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          return res.send(buffer);
+        }
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(targetUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'audio/*, */*'
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return res.status(response.status).json({ error: `Remote audio fetch failed with HTTP ${response.status}` });
+      }
+
+      const contentType = response.headers.get('content-type') || 'audio/mpeg';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+
+      const arrayBuffer = await response.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
+    } catch (err: any) {
+      console.warn('[ProxyAudio] Error:', err?.message || err);
+      res.status(500).json({ error: err?.message || 'Audio proxy fetch failed' });
+    }
+  });
+
+  // Image Proxy Helper (for canvas taint prevention and CORS bypass)
+  app.get('/api/proxy-image', async (req, res) => {
+    try {
+      const targetUrl = req.query.url as string;
+      if (!targetUrl) {
+        return res.status(400).json({ error: 'url query parameter is required' });
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(targetUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+          'Accept': 'image/*, */*'
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        return res.status(response.status).json({ error: `Remote image fetch failed with HTTP ${response.status}` });
+      }
+
+      const contentType = response.headers.get('content-type') || 'image/jpeg';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+
+      const arrayBuffer = await response.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
+    } catch (err: any) {
+      console.warn('[ProxyImage] Error:', err?.message || err);
+      res.status(500).json({ error: err?.message || 'Image proxy fetch failed' });
+    }
+  });
+
   // --- SERVER-SIDE FEATURE LOCK & PLAN ENFORCEMENT HELPERS ---
   const getPlanRankServer = (planKey: string, plansConfig?: Record<string, any>): number => {
     if (plansConfig && plansConfig[planKey] && typeof plansConfig[planKey].order === 'number') {

@@ -42,6 +42,7 @@ export interface GranularSceneSpec {
   musicMood: string;
   assignedAssetUrl?: string;
   assignedAssetSource?: 'user_upload' | 'ai_generated' | 'pexels' | 'pixabay' | 'unsplash' | 'cached';
+  voiceAudioUrl?: string;
 }
 
 export interface MediaAssetSpec {

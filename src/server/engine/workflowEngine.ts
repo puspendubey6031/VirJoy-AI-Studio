@@ -8,6 +8,7 @@ import { subtitleEngine } from './subtitleEngine.js';
 import { timelineEngine } from './timelineEngine.js';
 import { videoComposer } from './videoComposer.js';
 import { generateScriptWithFallback } from '../providers/scriptProvider.js';
+import { generateSpeechWithFallback } from '../providers/voiceProvider.js';
 import type {
   EngineCheckpoint,
   GranularSceneSpec,
@@ -161,13 +162,33 @@ export class MasterWorkflowEngine {
         updateStage('media_collection', 'Multi-Source Asset Collection & Caching', 60, 'completed', `Collected ${mediaAssets.length} visual assets.`);
       }
 
-      // STAGE 5: VOICE GENERATION
+      // STAGE 5: VOICE GENERATION (Per-scene and Unified Voice Synthesis)
       if (!checkpoint.completedStages.includes('voice_generation')) {
-        updateStage('voice_generation', 'Universal Voice Generation', 68, 'in_progress', 'Synthesizing audio voiceover...');
-        const voiceSpec = await voiceEngine.generateVoiceover(scriptText, voice, language || intel.detectedLanguage);
+        updateStage('voice_generation', 'Universal Voice Generation', 68, 'in_progress', 'Synthesizing audio voiceover for scenes...');
+        const voiceLanguage = language || intel.detectedLanguage;
+        const voiceSpec = await voiceEngine.generateVoiceover(scriptText, voice, voiceLanguage);
         checkpoint.voiceSpec = voiceSpec;
         checkpoint.costBreakdown.ttsCharacters += scriptText.length;
-        updateStage('voice_generation', 'Universal Voice Generation', 72, 'completed', `Synthesized ${voiceSpec.voiceName} audio.`);
+
+        // Generate and validate audio for each scene narration
+        for (let i = 0; i < checkpoint.scenes!.length; i++) {
+          const scene = checkpoint.scenes![i];
+          const sceneText = scene.narrationText || scriptText;
+          try {
+            const sceneSpeech = await generateSpeechWithFallback({
+              text: sceneText,
+              voice: voice || voiceSpec.voiceId,
+              language: voiceLanguage
+            });
+            scene.voiceAudioUrl = sceneSpeech.audioUrl;
+            console.log(`[WorkflowEngine] Scene ${i + 1} speech generated (${sceneSpeech.providerUsed}): ${sceneSpeech.byteSize || 'ok'} bytes`);
+          } catch (sceneVoiceErr: any) {
+            console.warn(`[WorkflowEngine] Scene ${i + 1} voice synthesis failed, using global voiceSpec audio:`, sceneVoiceErr?.message);
+            scene.voiceAudioUrl = voiceSpec.audioBufferUrl;
+          }
+        }
+
+        updateStage('voice_generation', 'Universal Voice Generation', 72, 'completed', `Synthesized ${voiceSpec.voiceName} audio for all scenes.`);
       }
 
       const voiceSpec = checkpoint.voiceSpec!;
@@ -216,12 +237,16 @@ export class MasterWorkflowEngine {
 
         try {
           const renderResult = await videoComposer.executeFFmpegRender(timelinePackage, exportPath);
-          checkpoint.renderedVideoUrl = `/exports/${fileName}`;
-          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', `Render completed. Video exported to /exports/${fileName}`);
+          if (fs.existsSync(exportPath) && fs.statSync(exportPath).size > 0) {
+            checkpoint.renderedVideoUrl = `/exports/${fileName}`;
+            updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', `Render completed. Video exported to /exports/${fileName}`);
+          } else {
+            console.warn('[WorkflowEngine] FFmpeg render produced empty file.');
+            updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', 'Render package compiled for client-side canvas renderer.');
+          }
         } catch (renderErr: any) {
-          console.warn('[WorkflowEngine] FFmpeg render error, creating fallback:', renderErr?.message || renderErr);
-          checkpoint.renderedVideoUrl = `/exports/${fileName}`;
-          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', 'Render package ready for Processing Engine.');
+          console.warn('[WorkflowEngine] FFmpeg server render unavailable in current environment:', renderErr?.message || renderErr);
+          updateStage('video_composition', 'Video Composition & Worker Package', 98, 'completed', 'Timeline & assets ready for high-fidelity client render.');
         }
       }
 

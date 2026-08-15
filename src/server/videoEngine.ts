@@ -58,7 +58,7 @@ export async function planVideoWithAI(options: PlanVideoOptions, apiKey?: string
       visualEffect: s.visualEffect,
       subtitleStartTime: s.subtitleStartTime,
       subtitleEndTime: s.subtitleEndTime,
-      voiceAudioUrl: `/api/proxy-audio?url=${encodeURIComponent(`https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(s.narrationText || prompt)}&tl=${(inputs.language || 'en').startsWith('hi') ? 'hi' : (inputs.language || 'en').startsWith('ta') ? 'ta' : 'en'}&client=tw-ob`)}`,
+      voiceAudioUrl: s.voiceAudioUrl || checkpoint.timelinePackage?.voiceAudioUrl,
       backgroundMusicUrl: checkpoint.timelinePackage?.backgroundMusicUrl || '/audio/cinematic.mp3'
     }));
 

@@ -128,7 +128,7 @@ export async function generateImageWithFallback(options: ImageGenerationOptions)
   const widthParam = aspectRatio === '9:16' ? 720 : aspectRatio === '1:1' ? 1024 : 1280;
   const heightParam = aspectRatio === '9:16' ? 1280 : aspectRatio === '1:1' ? 1024 : 720;
   const seed = Math.floor(Math.random() * 1000000);
-  const cleanPrompt = prompt.substring(0, 120).replace(/[^a-zA-Z0-9 ]/g, ' ').trim();
+  const cleanPrompt = prompt.substring(0, 350).replace(/[^a-zA-Z0-9 ,.-]/g, ' ').trim();
   const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt)}?width=${widthParam}&height=${heightParam}&seed=${seed}&nologo=true&model=flux`;
 
   return {

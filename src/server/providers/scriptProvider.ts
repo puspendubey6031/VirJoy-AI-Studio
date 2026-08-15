@@ -51,9 +51,30 @@ Each scene object MUST have:
 - "stockSearchTerm": string 2-3 word stock photo/video search query
 - "transition": string e.g. "fade", "zoom-in", "slide"`;
 
-  const userPrompt = `Generate a ${targetDurationSeconds}-second high-converting AI promotional video script for prompt: "${prompt}".
-Product / Inputs: ${JSON.stringify(inputs)}
-Aspect Ratio: ${aspectRatio}`;
+  const userPrompt = `Create a faithful ${targetDurationSeconds}-second narrative video from the user's exact prompt.
+
+USER PROMPT:
+"${prompt}"
+
+IMPORTANT:
+- Preserve the user's original story, characters, objects, locations, sequence of events, and actions.
+- Do NOT convert a story into a product advertisement.
+- Do NOT invent a product, commercial message, marketing hook, brand promotion, or unrelated subject unless the user explicitly requested one.
+- Do NOT replace the user's characters or environment with generic stock concepts.
+- Break the story into visually meaningful chronological scenes.
+- Each scene must represent what actually happens during that part of the story.
+- If the user describes an action such as rain falling, running, eating, opening something, flying, falling, driving, fire, or walking, the corresponding scene must visibly show that action.
+- Preserve continuity of the same main character/object/environment across scenes.
+- The scene sequence must follow the user's story in chronological order.
+- Voiceover must narrate the actual story, not a marketing script.
+- Subtitles must correspond to the actual narration.
+- Do not add unrelated promotional language.
+
+Inputs:
+${JSON.stringify(inputs)}
+
+Aspect Ratio:
+${aspectRatio}`;
 
   // --- 1. PRIMARY PROVIDER: GEMINI ---
   const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
@@ -73,11 +94,16 @@ Aspect Ratio: ${aspectRatio}`;
           scenes: parsed.map((s, idx) => ({
             sceneNumber: s.sceneNumber || idx + 1,
             duration: s.duration || avgSceneDuration,
-            visualDescription: s.visualDescription || `Cinematic shot for ${prompt}`,
-            voiceoverText: s.voiceoverText || `Discover ${prompt}`,
-            textOverlay: s.textOverlay || prompt.substring(0, 20),
-            imagePrompt: s.imagePrompt || `4k studio lighting photo of ${prompt}`,
-            stockSearchTerm: s.stockSearchTerm || prompt.split(' ')[0] || 'product',
+            visualDescription: s.visualDescription || s.imagePrompt || `Scene ${idx + 1} depicting ${prompt}`,
+            voiceoverText: s.voiceoverText || s.visualDescription || prompt,
+            textOverlay: s.textOverlay || s.voiceoverText || s.visualDescription || prompt.substring(0, 80),
+            imagePrompt:
+              s.imagePrompt ||
+              s.visualDescription ||
+              `A cinematic visual accurately depicting this exact story moment: ${prompt}`,
+            stockSearchTerm:
+              s.stockSearchTerm ||
+              (s.visualDescription || prompt).substring(0, 80),
             transition: s.transition || 'fade'
           })),
           providerUsed: 'Gemini',
@@ -120,12 +146,17 @@ Aspect Ratio: ${aspectRatio}`;
             scenes: scenesArr.map((s: any, idx: number) => ({
               sceneNumber: s.sceneNumber || idx + 1,
               duration: s.duration || avgSceneDuration,
-              visualDescription: s.visualDescription || `Scene ${idx + 1} for ${prompt}`,
-              voiceoverText: s.voiceoverText || prompt,
-              textOverlay: s.textOverlay || 'VirJoy AI',
-              imagePrompt: s.imagePrompt || `High resolution scene for ${prompt}`,
-              stockSearchTerm: s.stockSearchTerm || 'commercial',
-              transition: 'fade'
+              visualDescription: s.visualDescription || s.imagePrompt || `Scene ${idx + 1} depicting ${prompt}`,
+              voiceoverText: s.voiceoverText || s.visualDescription || prompt,
+              textOverlay: s.textOverlay || s.voiceoverText || s.visualDescription || prompt.substring(0, 80),
+              imagePrompt:
+                s.imagePrompt ||
+                s.visualDescription ||
+                `A cinematic visual accurately depicting this exact story moment: ${prompt}`,
+              stockSearchTerm:
+                s.stockSearchTerm ||
+                (s.visualDescription || prompt).substring(0, 80),
+              transition: s.transition || 'fade'
             })),
             providerUsed: 'Groq',
             modelUsed: 'llama-3.3-70b-versatile'
@@ -167,12 +198,17 @@ Aspect Ratio: ${aspectRatio}`;
             scenes: scenesArr.map((s: any, idx: number) => ({
               sceneNumber: s.sceneNumber || idx + 1,
               duration: s.duration || avgSceneDuration,
-              visualDescription: s.visualDescription || `Scene ${idx + 1}`,
-              voiceoverText: s.voiceoverText || prompt,
-              textOverlay: s.textOverlay || 'VirJoy AI',
-              imagePrompt: s.imagePrompt || `Professional visual for ${prompt}`,
-              stockSearchTerm: s.stockSearchTerm || 'video',
-              transition: 'fade'
+              visualDescription: s.visualDescription || s.imagePrompt || `Scene ${idx + 1} depicting ${prompt}`,
+              voiceoverText: s.voiceoverText || s.visualDescription || prompt,
+              textOverlay: s.textOverlay || s.voiceoverText || s.visualDescription || prompt.substring(0, 80),
+              imagePrompt:
+                s.imagePrompt ||
+                s.visualDescription ||
+                `A cinematic visual accurately depicting this exact story moment: ${prompt}`,
+              stockSearchTerm:
+                s.stockSearchTerm ||
+                (s.visualDescription || prompt).substring(0, 80),
+              transition: s.transition || 'fade'
             })),
             providerUsed: 'Cohere',
             modelUsed: 'command-r-plus'
@@ -215,12 +251,17 @@ Aspect Ratio: ${aspectRatio}`;
             scenes: scenesArr.map((s: any, idx: number) => ({
               sceneNumber: s.sceneNumber || idx + 1,
               duration: s.duration || avgSceneDuration,
-              visualDescription: s.visualDescription || `Scene ${idx + 1} for ${prompt}`,
-              voiceoverText: s.voiceoverText || prompt,
-              textOverlay: s.textOverlay || 'VirJoy AI',
-              imagePrompt: s.imagePrompt || `High resolution scene for ${prompt}`,
-              stockSearchTerm: s.stockSearchTerm || 'commercial',
-              transition: 'fade'
+              visualDescription: s.visualDescription || s.imagePrompt || `Scene ${idx + 1} depicting ${prompt}`,
+              voiceoverText: s.voiceoverText || s.visualDescription || prompt,
+              textOverlay: s.textOverlay || s.voiceoverText || s.visualDescription || prompt.substring(0, 80),
+              imagePrompt:
+                s.imagePrompt ||
+                s.visualDescription ||
+                `A cinematic visual accurately depicting this exact story moment: ${prompt}`,
+              stockSearchTerm:
+                s.stockSearchTerm ||
+                (s.visualDescription || prompt).substring(0, 80),
+              transition: s.transition || 'fade'
             })),
             providerUsed: 'Mistral',
             modelUsed: 'mistral-small-latest'
@@ -310,31 +351,31 @@ Aspect Ratio: ${aspectRatio}`;
       {
         sceneNumber: 1,
         duration: Math.max(3, Math.floor(targetDurationSeconds / numScenes)),
-        visualDescription: `Dramatic opening hook featuring: "${prompt}". High contrast 4k studio lighting.`,
-        voiceoverText: `Are you ready for the ultimate experience? Introducing ${prompt.substring(0, 30)}!`,
-        textOverlay: `REVOLUTIONARY`,
-        imagePrompt: `High resolution 4k studio commercial banner for ${prompt}`,
-        stockSearchTerm: `technology product`,
+        visualDescription: `Opening scene depicting "${prompt}". Cinematic lighting and composition.`,
+        voiceoverText: prompt,
+        textOverlay: prompt.substring(0, 35),
+        imagePrompt: `A cinematic 4k visual accurately depicting the opening scene of: ${prompt}`,
+        stockSearchTerm: prompt.substring(0, 40),
         transition: 'fade'
       },
       {
         sceneNumber: 2,
         duration: Math.max(3, Math.ceil(targetDurationSeconds / numScenes)),
-        visualDescription: `Close-up view demonstrating key benefits and features of ${prompt}. Modern dynamic motion.`,
-        voiceoverText: `Engineered with precision and premium quality to elevate your daily workflow seamlessly.`,
-        textOverlay: `PREMIUM QUALITY`,
-        imagePrompt: `Sleek minimalist product showcase of ${prompt}`,
-        stockSearchTerm: `lifestyle professional`,
+        visualDescription: `Main action scene depicting "${prompt}". Clear subject and environmental motion.`,
+        voiceoverText: prompt,
+        textOverlay: prompt.substring(0, 35),
+        imagePrompt: `A cinematic 4k visual accurately depicting the main action in: ${prompt}`,
+        stockSearchTerm: prompt.substring(0, 40),
         transition: 'zoom_in'
       },
       {
         sceneNumber: 3,
         duration: Math.max(3, Math.floor(targetDurationSeconds / numScenes)),
-        visualDescription: `Call to action scene with vibrant background particles, company branding, and special discount badge.`,
-        voiceoverText: `Don't wait! Get yours today with exclusive limited-time launch offers available now.`,
-        textOverlay: `SPECIAL OFFER - BUY NOW`,
-        imagePrompt: `Modern promotional banner with call to action for ${prompt}`,
-        stockSearchTerm: `celebration offer`,
+        visualDescription: `Resolution scene depicting "${prompt}".`,
+        voiceoverText: prompt,
+        textOverlay: prompt.substring(0, 35),
+        imagePrompt: `A cinematic 4k visual accurately depicting the resolution of: ${prompt}`,
+        stockSearchTerm: prompt.substring(0, 40),
         transition: 'slide'
       }
     );

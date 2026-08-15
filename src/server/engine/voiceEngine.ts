@@ -22,17 +22,12 @@ export class UniversalVoiceEngine {
     const estimatedDuration = Math.max(2, Math.round((wordCount / 2.5) * 10) / 10);
 
     let audioBufferUrl = '';
-    try {
-      const speechRes = await generateSpeechWithFallback({
-        text,
-        voice: voiceId,
-        language
-      });
-      audioBufferUrl = speechRes.audioUrl;
-    } catch (e) {
-      console.warn('[UniversalVoiceEngine] Speech generation fallback note:', e);
-      audioBufferUrl = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(text.substring(0, 200))}&tl=en&client=tw-ob`;
-    }
+    const speechRes = await generateSpeechWithFallback({
+      text,
+      voice: voiceId,
+      language
+    });
+    audioBufferUrl = speechRes.audioUrl;
 
     return {
       provider,

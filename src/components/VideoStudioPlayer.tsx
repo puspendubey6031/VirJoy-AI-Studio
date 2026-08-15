@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { VideoProject } from '../types';
+import { VideoProject, Scene } from '../types';
 import {
   Play,
   Pause,
@@ -376,25 +376,26 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
   // Helper to load audio buffer safely with fetch via proxy
   const fetchAudioBuffer = async (ctx: AudioContext, url: string): Promise<AudioBuffer | null> => {
     try {
+      if (!url || typeof url !== 'string') return null;
       const fetchUrl = (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('/audio/'))
         ? url
         : `/api/proxy-audio?url=${encodeURIComponent(url)}`;
-      console.log('[AudioPreload] Fetching audio from:', fetchUrl);
+      console.log('[AudioPreload] Fetching audio from:', fetchUrl.substring(0, 80));
       const res = await fetch(fetchUrl);
       if (!res.ok) {
-        console.warn('[AudioPreload] Response not ok:', res.status, fetchUrl);
+        console.warn('[AudioPreload] Response not ok:', res.status, fetchUrl.substring(0, 80));
         return null;
       }
       const arrayBuffer = await res.arrayBuffer();
       if (!arrayBuffer || arrayBuffer.byteLength === 0) {
-        console.warn('[AudioPreload] ArrayBuffer empty:', fetchUrl);
+        console.warn('[AudioPreload] ArrayBuffer empty:', fetchUrl.substring(0, 80));
         return null;
       }
       const decoded = await ctx.decodeAudioData(arrayBuffer);
-      console.log('[AudioPreload] Successfully decoded audio:', fetchUrl, 'duration:', decoded.duration);
+      console.log('[AudioPreload] Successfully decoded audio, duration:', decoded.duration);
       return decoded;
     } catch (e) {
-      console.warn('[AudioPreload] Error loading audio buffer:', url, e);
+      console.warn('[AudioPreload] Error loading audio buffer:', url?.substring(0, 60), e);
       return null;
     }
   };
@@ -402,10 +403,16 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
   // Helper to preload clean same-origin blob image to guarantee canvas is never tainted
   const preloadCleanImage = (url: string): Promise<HTMLImageElement | null> => {
     return new Promise((resolve) => {
-      if (!url) return resolve(null);
-      if (url.startsWith('data:')) {
+      if (!url || typeof url !== 'string') return resolve(null);
+      if (url.startsWith('data:') || url.startsWith('blob:')) {
         const img = new Image();
-        img.onload = () => resolve(img);
+        img.onload = () => {
+          if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+            resolve(img);
+          } else {
+            resolve(null);
+          }
+        };
         img.onerror = () => resolve(null);
         img.src = url;
         return;
@@ -418,9 +425,17 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
           return res.blob();
         })
         .then(blob => {
+          if (!blob || blob.size === 0) throw new Error('Empty image blob');
           const objectUrl = URL.createObjectURL(blob);
           const img = new Image();
-          img.onload = () => resolve(img);
+          img.onload = () => {
+            if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+              resolve(img);
+            } else {
+              URL.revokeObjectURL(objectUrl);
+              resolve(null);
+            }
+          };
           img.onerror = () => {
             URL.revokeObjectURL(objectUrl);
             resolve(null);
@@ -428,12 +443,9 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
           img.src = objectUrl;
         })
         .catch((err) => {
-          console.warn('[CleanImagePreload] Proxy failed, falling back to direct load:', url, err);
-          const fallbackImg = new Image();
-          fallbackImg.crossOrigin = 'anonymous';
-          fallbackImg.onload = () => resolve(fallbackImg);
-          fallbackImg.onerror = () => resolve(null);
-          fallbackImg.src = url;
+          console.warn('[CleanImagePreload] Proxy failed for url:', url.substring(0, 60), err?.message || err);
+          // Do NOT fall back to direct unproxied cross-origin URL to prevent canvas tainting
+          resolve(null);
         });
     });
   };
@@ -444,7 +456,7 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
     w: number,
     h: number,
     t: number,
-    sceneList: any[]
+    sceneList: Scene[]
   ) => {
     let acc = 0;
     let activeScene = sceneList[0];
@@ -547,49 +559,124 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
   const handleDownloadVideo = async () => {
     const canvas = canvasRef.current;
     if (!canvas) {
-      console.error('[Download] Canvas ref missing!');
+      console.error('[Download Error] stage=init error=Canvas ref missing! scene=N/A url=N/A');
       return;
     }
 
-    console.log('[Download] 1. Download button clicked');
-    console.log('[Download] 2. Scenes loaded:', scenes.length, 'scenes');
-    console.log('[Download] 3. Total duration calculated:', totalDuration, 'seconds');
+    let currentStage = 'init';
+    let currentSceneNumber = 0;
+    let currentUrl = '';
+
+    console.log('[Download] START');
+    console.log(`[Download] scenes= ${scenes.length}`);
+    console.log(`[Download] duration= ${totalDuration}`);
 
     setIsDownloading(true);
 
+    let audioCtx: AudioContext | null = null;
+
     try {
-      // Image Preload Phase
-      console.log('[Download] 4. Image preload started');
-      const imagePromises = scenes.map(async (scene, i) => {
-        if (!scene.imageUrl) return;
-        if (imageCacheRef.current[scene.imageUrl]?.complete) return;
-        console.log(`[Download] Preloading image for scene ${i + 1}:`, scene.imageUrl);
-        const img = await preloadCleanImage(scene.imageUrl);
-        if (img) {
-          imageCacheRef.current[scene.imageUrl] = img;
-          console.log(`[Download] Scene ${i + 1} image preloaded successfully`);
+      // 1. HARD-REQUIRED IMAGE PRELOAD PHASE
+      console.log('[Download] image preload START');
+      currentStage = 'image_preload';
+      for (let i = 0; i < scenes.length; i++) {
+        const scene = scenes[i];
+        currentSceneNumber = i + 1;
+        currentUrl = scene.imageUrl || '';
+
+        if (!scene.imageUrl || scene.imageUrl.trim().length === 0) {
+          throw new Error(`IMAGE_LOAD_FAILED scene=${i + 1} url=empty`);
         }
-      });
 
-      await Promise.all(imagePromises);
-      console.log('[Download] 5. Image preload completed');
+        let img = imageCacheRef.current[scene.imageUrl];
+        if (!img || !img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+          console.log(`[Download] Preloading clean image for scene ${i + 1}: ${scene.imageUrl.substring(0, 60)}`);
+          img = await preloadCleanImage(scene.imageUrl);
+          if (!img || img.naturalWidth <= 0 || img.naturalHeight <= 0) {
+            throw new Error(`IMAGE_LOAD_FAILED scene=${i + 1} url=${scene.imageUrl}`);
+          }
+          imageCacheRef.current[scene.imageUrl] = img;
+        }
+      }
+      console.log('[Download] image preload COMPLETE');
 
-      // Audio Setup Phase
-      console.log('[Download] 6. Voice preload started');
+      // 2. AUDIO SETUP & PRELOAD PHASE
+      console.log('[Download] audio preload START');
+      currentStage = 'audio_preload';
+
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      const audioCtx = new AudioCtx();
+      audioCtx = new AudioCtx();
       if (audioCtx.state === 'suspended') {
         await audioCtx.resume();
       }
-      console.log('[Download] 10. AudioContext created & resumed, state:', audioCtx.state);
+      console.log(`[Download] AudioContext= ${audioCtx.state}`);
 
       const destNode = audioCtx.createMediaStreamDestination();
-      console.log('[Download] 11. MediaStreamDestination created');
+      console.log('[Download] MediaStreamDestination= created');
 
-      // BGM Setup
-      console.log('[Download] 8. BGM preload started');
+      const audioEnabled = !isMuted;
+
+      // Preload BGM buffer
       const musicUrl = scenes[0]?.backgroundMusicUrl || project.inputs?.backgroundMusicUrl || '/audio/cinematic.mp3';
-      const bgmBuffer = await fetchAudioBuffer(audioCtx, musicUrl);
+      let bgmBuffer: AudioBuffer | null = null;
+      if (audioEnabled && musicUrl) {
+        currentUrl = musicUrl;
+        bgmBuffer = await fetchAudioBuffer(audioCtx, musicUrl);
+        if (bgmBuffer && bgmBuffer.duration <= 0) {
+          throw new Error('BGM_LOAD_FAILED');
+        }
+      }
+
+      // Preload Scene Voice and SFX buffers
+      const sceneAudioData: Array<{
+        voiceBuffer: AudioBuffer | null;
+        sfxBuffer: AudioBuffer | null;
+        offsetTime: number;
+        duration: number;
+      }> = [];
+
+      let sceneAccumulatedOffset = 0;
+      for (let i = 0; i < scenes.length; i++) {
+        const s = scenes[i];
+        currentSceneNumber = i + 1;
+        const dur = s.duration || 4;
+        const currentOffset = sceneAccumulatedOffset;
+
+        let voiceBuffer: AudioBuffer | null = null;
+        if (audioEnabled && s.narration && s.narration.trim().length > 0) {
+          const voiceUrl = s.voiceAudioUrl || `/api/proxy-audio?url=${encodeURIComponent(`https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(s.narration)}&tl=en&client=tw-ob`)}`;
+          currentUrl = voiceUrl;
+          voiceBuffer = await fetchAudioBuffer(audioCtx, voiceUrl);
+          if (!voiceBuffer || voiceBuffer.duration <= 0) {
+            throw new Error(`VOICE_LOAD_FAILED scene=${i + 1}`);
+          }
+        }
+
+        let sfxBuffer: AudioBuffer | null = null;
+        if (audioEnabled && s.sfxUrl && s.sfxUrl.trim().length > 0) {
+          currentUrl = s.sfxUrl;
+          sfxBuffer = await fetchAudioBuffer(audioCtx, s.sfxUrl);
+          if (!sfxBuffer || sfxBuffer.duration <= 0) {
+            throw new Error(`SFX_LOAD_FAILED scene=${i + 1}`);
+          }
+        }
+
+        sceneAudioData.push({
+          voiceBuffer,
+          sfxBuffer,
+          offsetTime: currentOffset,
+          duration: dur
+        });
+
+        sceneAccumulatedOffset += dur;
+      }
+      console.log('[Download] audio preload COMPLETE');
+
+      // 3. AUDIO CLOCK SCHEDULING
+      currentStage = 'audio_scheduling';
+      const recordStartTime = audioCtx.currentTime + 0.1;
+
+      // Start BGM
       if (bgmBuffer) {
         const bgSource = audioCtx.createBufferSource();
         bgSource.buffer = bgmBuffer;
@@ -598,149 +685,187 @@ export const VideoStudioPlayer: React.FC<VideoStudioPlayerProps> = ({
         bgGain.gain.value = 0.25;
         bgSource.connect(bgGain);
         bgGain.connect(destNode);
-        bgSource.start(0);
-        console.log('[Download] BGM source connected to destNode');
+        bgSource.start(recordStartTime);
+        console.log('[Download] BGM source scheduled at recordStartTime:', recordStartTime);
       }
-      console.log('[Download] 9. BGM preload completed');
 
-      // Voice Setup
-      let sceneAccTime = 0;
-      for (let i = 0; i < scenes.length; i++) {
-        const s = scenes[i];
-        const dur = s.duration || 4;
-        const voiceUrl = s.voiceAudioUrl || `/api/proxy-audio?url=${encodeURIComponent(`https://translate.google.com/translate_tts?ie=UTF-8&q=${encodeURIComponent(s.narration || 'VirJoy AI')}&tl=en&client=tw-ob`)}`;
-
-        const voiceBuffer = await fetchAudioBuffer(audioCtx, voiceUrl);
-        if (voiceBuffer) {
+      // Schedule Scene Voices & SFX
+      sceneAudioData.forEach((item, idx) => {
+        const startTime = recordStartTime + item.offsetTime;
+        if (item.voiceBuffer) {
           const vSource = audioCtx.createBufferSource();
-          vSource.buffer = voiceBuffer;
+          vSource.buffer = item.voiceBuffer;
           const vGain = audioCtx.createGain();
           vGain.gain.value = 1.0;
           vSource.connect(vGain);
           vGain.connect(destNode);
-          vSource.start(audioCtx.currentTime + sceneAccTime);
-          console.log(`[Download] Scene ${i + 1} voice connected at +${sceneAccTime}s`);
+          vSource.start(startTime);
+          console.log(`[Download] Scene ${idx + 1} voice scheduled at audioCtx time ${startTime.toFixed(2)}s`);
         }
-        sceneAccTime += dur;
-      }
-      console.log('[Download] 7. Voice preload completed');
 
-      // Canvas & Stream Combination Phase
+        if (item.sfxBuffer) {
+          const sfxSource = audioCtx.createBufferSource();
+          sfxSource.buffer = item.sfxBuffer;
+          const sfxGain = audioCtx.createGain();
+          sfxGain.gain.value = 0.6;
+          sfxSource.connect(sfxGain);
+          sfxGain.connect(destNode);
+          sfxSource.start(startTime);
+          console.log(`[Download] Scene ${idx + 1} SFX scheduled at audioCtx time ${startTime.toFixed(2)}s`);
+        }
+      });
+
+      // 4. CANVAS STREAM & COMBINED STREAM SETUP
+      currentStage = 'stream_setup';
       const canvasStream = canvas.captureStream(30);
-      console.log('[Download] 12. canvas.captureStream created');
-
       const videoTracks = canvasStream.getVideoTracks();
-      console.log('[Download] 13. Video track count:', videoTracks.length);
-      if (videoTracks.length === 0) {
-        throw new Error('Canvas captureStream returned zero video tracks');
+      if (videoTracks.length < 1) {
+        throw new Error('VIDEO_TRACK_CREATION_FAILED');
       }
+      console.log(`[Download] videoTracks= ${videoTracks.length}`);
 
       const audioTracks = destNode.stream.getAudioTracks();
-      console.log('[Download] 14. Audio track count:', audioTracks.length);
+      if (audioEnabled && audioTracks.length < 1) {
+        throw new Error('AUDIO_TRACK_CREATION_FAILED');
+      }
+      console.log(`[Download] audioTracks= ${audioTracks.length}`);
 
       const combinedTracks = [...videoTracks, ...audioTracks];
       const combinedStream = new MediaStream(combinedTracks);
+      console.log(`[Download] combinedTracks= ${combinedTracks.length}`);
 
-      // Select MIME Type
-      let mimeType = 'video/webm;codecs=vp9';
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8')) {
-          mimeType = 'video/webm;codecs=vp8';
-        } else if (MediaRecorder.isTypeSupported('video/webm')) {
-          mimeType = 'video/webm';
-        } else if (MediaRecorder.isTypeSupported('video/mp4')) {
-          mimeType = 'video/mp4';
-        } else {
-          mimeType = '';
-        }
+      if (combinedStream.getVideoTracks().length < 1) {
+        throw new Error('VIDEO_TRACK_CREATION_FAILED');
       }
-      console.log('[Download] Selected MIME type:', mimeType);
+      if (audioEnabled && combinedStream.getAudioTracks().length < 1) {
+        throw new Error('AUDIO_TRACK_CREATION_FAILED');
+      }
 
-      const recorderOptions = mimeType ? { mimeType } : undefined;
+      // 5. MIME TYPE SELECTION
+      currentStage = 'mime_selection';
+      const mimeCandidates = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+        'video/mp4'
+      ];
+      const mimeType = mimeCandidates.find(type => MediaRecorder.isTypeSupported(type)) || '';
+      if (!mimeType) {
+        throw new Error('NO_SUPPORTED_MEDIARECORDER_MIME_TYPE');
+      }
+      console.log(`[Download] mimeType= ${mimeType}`);
+
+      // 6. MEDIARECORDER LIFECYCLE & PROMISE SETUP
+      currentStage = 'media_recorder';
+      const recorderOptions = { mimeType };
       const mediaRecorder = new MediaRecorder(combinedStream, recorderOptions);
-      console.log('[Download] 15. MediaRecorder created');
 
       const chunks: Blob[] = [];
+      const recordingFinished = new Promise<Blob>((resolve, reject) => {
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            chunks.push(e.data);
+            console.log(`[Download] ondataavailable= size=${e.data.size} totalChunks=${chunks.length}`);
+          }
+        };
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) {
-          chunks.push(e.data);
-          console.log('[Download] 20. ondataavailable fired, chunk size:', e.data.size, 'total chunks:', chunks.length);
-        }
-      };
+        mediaRecorder.onerror = (e) => {
+          console.error('[Download] mediaRecorder onerror:', e);
+          reject(e);
+        };
 
-      mediaRecorder.onstop = () => {
-        console.log('[Download] 19. MediaRecorder onstop event fired. Chunk count:', chunks.length);
-        console.log('[Download] 21. Blob chunks count:', chunks.length);
-
-        audioCtx.close().catch(() => {});
-
-        const finalMime = mimeType || 'video/webm';
-        const blob = new Blob(chunks, { type: finalMime });
-        console.log('[Download] 22. Final Blob size:', blob.size, 'bytes');
-        console.log('[Download] 23. Final MIME type:', finalMime);
-
-        if (blob.size === 0) {
-          console.error('[Download Error] MediaRecorder blob size is 0');
-          setIsDownloading(false);
-          return;
-        }
-
-        const url = URL.createObjectURL(blob);
-        console.log('[Download] 24. Download URL created:', url);
-
-        const a = document.createElement('a');
-        a.href = url;
-        const ext = finalMime.includes('mp4') ? 'mp4' : 'webm';
-        const fileName = `${project.title.replace(/\s+/g, '_')}_${project.exportQuality || 'HD'}.${ext}`;
-        a.download = fileName;
-        document.body.appendChild(a);
-        a.click();
-        console.log('[Download] 25. anchor.click() executed for:', fileName);
-        document.body.removeChild(a);
-
-        setTimeout(() => {
-          URL.revokeObjectURL(url);
-          setIsDownloading(false);
-          console.log('[Download] 26. Cleanup completed');
-        }, 1000);
-      };
+        mediaRecorder.onstop = () => {
+          console.log(`[Download] onstop= chunks=${chunks.length}`);
+          try {
+            if (chunks.length === 0) {
+              throw new Error('MEDIARECORDER_NO_CHUNKS');
+            }
+            const blob = new Blob(chunks, { type: mimeType });
+            if (blob.size <= 0) {
+              throw new Error('FINAL_VIDEO_BLOB_EMPTY');
+            }
+            if (!blob.type.startsWith('video/')) {
+              throw new Error(`INVALID_VIDEO_MIME_TYPE: ${blob.type}`);
+            }
+            resolve(blob);
+          } catch (err) {
+            reject(err);
+          }
+        };
+      });
 
       mediaRecorder.start(100);
-      console.log('[Download] 16. MediaRecorder started');
+      console.log('[Download] MediaRecorder START');
 
-      // Frame loop
+      // 7. DETERMINISTIC FRAME LOOP
+      currentStage = 'frame_loop';
+      console.log('[Download] FRAME LOOP START');
+      let recordTime = 0;
+      const fps = 30;
+      const dt = 1 / fps;
+      const frameIntervalMs = 1000 / fps;
+
       const width = project.aspectRatio === '9:16' ? 360 : project.aspectRatio === '1:1' ? 480 : 640;
       const height = project.aspectRatio === '9:16' ? 640 : project.aspectRatio === '1:1' ? 480 : 360;
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('CANVAS_CONTEXT_UNAVAILABLE');
 
-      let recTime = 0;
-      const frameRate = 30;
-      const dt = 1 / frameRate;
-
-      console.log('[Download] 17. Frame loop started');
-
-      const recordInterval = setInterval(() => {
-        if (recTime >= totalDuration) {
-          clearInterval(recordInterval);
-          console.log('[Download] 18. Frame loop completed at t =', recTime);
-          setTimeout(() => {
-            if (mediaRecorder.state !== 'inactive') {
-              console.log('[Download] Stopping MediaRecorder');
-              mediaRecorder.stop();
-            }
-          }, 300);
-          return;
+      try {
+        while (recordTime <= totalDuration) {
+          drawFrameForTime(ctx, width, height, recordTime, scenes);
+          await new Promise((r) => setTimeout(r, frameIntervalMs));
+          recordTime += dt;
         }
-
-        if (ctx) {
-          drawFrameForTime(ctx, width, height, recTime, scenes);
+        drawFrameForTime(ctx, width, height, totalDuration, scenes);
+        console.log('[Download] FRAME LOOP COMPLETE');
+      } finally {
+        console.log('[Download] MediaRecorder STOP REQUEST');
+        if (mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
         }
-        recTime += dt;
-      }, 1000 / frameRate);
+      }
 
-    } catch (e: any) {
-      console.error('[Download Critical Failure]:', e?.message || e, e);
+      // 8. FINAL BLOB VALIDATION & DOWNLOAD TRIGGER
+      currentStage = 'blob_validation';
+      const blob = await recordingFinished;
+      if (audioCtx) {
+        audioCtx.close().catch(() => {});
+      }
+
+      console.log(`[Download] chunk count: ${chunks.length}`);
+      console.log(`[Download] blobSize= ${blob.size}`);
+      console.log(`[Download] blobType= ${blob.type}`);
+      console.log(`[Download] videoTracks= ${videoTracks.length}`);
+      console.log(`[Download] audioTracks= ${audioTracks.length}`);
+      console.log(`[Download] total duration: ${totalDuration}`);
+
+      currentStage = 'download_trigger';
+      const safeTitle = (project.title || 'virjoy_video').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const downloadUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      const ext = mimeType.includes('mp4') ? 'mp4' : 'webm';
+      anchor.download = `${safeTitle}_${project.exportQuality || 'HD'}.${ext}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      console.log('[Download] DOWNLOAD CLICKED');
+      anchor.remove();
+
+      setTimeout(() => {
+        URL.revokeObjectURL(downloadUrl);
+        console.log('[Download] CLEANUP COMPLETE');
+      }, 60000);
+
+    } catch (err: any) {
+      console.error(`[Download Error]
+stage=${currentStage}
+error=${err?.message || err}
+scene=${currentSceneNumber || 'N/A'}
+url=${currentUrl || 'N/A'}`);
+      alert(`Download failed: ${err?.message || 'Video export error'}`);
+    } finally {
       setIsDownloading(false);
     }
   };
